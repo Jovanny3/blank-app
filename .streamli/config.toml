@@ -1,5 +1,5 @@
 [theme]
 primaryColor="#d90429"
-backgroundColor="#e5e7eb"
-secondaryBackgroundColor="#eef1f5"
+backgroundColor="#e5e7eb"         # prata perolado (modo claro)
+secondaryBackgroundColor="#eef1f5" # caixas em cinza
 textColor="#1f2937"
