@@ -160,13 +160,13 @@ BACKGROUND_CSS = """
   background-size: cover;
   background-position: center;
   filter: blur(4px) brightness(0.6);
-  /* Aplique blur e escurecimento para destacar o conteúdo */
+  /* Aplique blur e escurecimento para destacar o conteúdo 
   position: fixed;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
-  z-index: -1;
+  z-index: -1;*/
 }
 
 [data-testid="stAppViewContainer"] > .main {
