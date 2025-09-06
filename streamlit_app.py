@@ -159,7 +159,7 @@ NAVBAR_HTML = """
     <div class="brand">
       <span>📊 Comércio Externo de Angola</span>
       <span class="badge">Ano-base: 2022</span>
-      <span class="tag">v1.6.3</span>
+      
     </div>
     <div class="links">
       <a href="#kpis">KPIs</a>
