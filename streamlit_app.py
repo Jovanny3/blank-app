@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 Comércio Externo de Angola — 2022
-v1.5 — Tabs + Website Mode + Prata + Recomendações + Correções de robustez
+v1.6 — Header/Navbar fluidos + Footer + Maior espaçamento nos cards (UI polida)
 
-• Modo claro prateado (cinza perolado) e Modo escuro executivo
-• Website Mode: hero, cards, grid de KPIs
-• Tabs de navegação: Visão Geral | Parceiros | Produtos | Regiões | Dados
-• Treemap para Top Produtos (toggle), PNG export (kaleido)
-• Anotações educativas em gráficos (pico/vale, 80/20, superávit/déficit)
-• Insights automáticos e Recomendações para leigos/gestores
-• Conversão AOA⇄USD (taxas por mês 2022; CSV opcional ou entrada manual)
-• Países → ISO3 (pycountry + exceções PT↔EN)
-• Cache seguro e widgets fora de funções cacheadas
+Mantém:
+• Website Mode (hero, cards, grid)
+• Tabs: Visão Geral | Parceiros | Produtos | Regiões | Dados
+• Treemap, PNG export (kaleido), AOA⇄USD (taxas mensais/ média), ISO3 com exceções
+• Insights + Recomendações (linguagem simples)
+
+Nota: Âncoras na navbar funcionam melhor dentro da tab ativa.
 """
 
 import os
@@ -55,59 +53,147 @@ CUSTOM_CSS = f"""
   --sub: {P['SUB']};
 }}
 
+html {{
+  scroll-behavior: smooth;
+}}
+
 html, body, [data-testid="stAppViewContainer"] {{
   background: var(--bg);
   color: var(--text);
-  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial;
 }}
 
-.block-container {{ max-width: 1200px; padding-top: .6rem; }}
+.block-container {{ max-width: 1200px; padding-top: 0.5rem; }}
 
+/* ===== Top Navbar (sticky) ===== */
+.topbar {{
+  position: sticky; top: 0; z-index: 999;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 10px 14px; margin-bottom: 10px;
+  background: {"rgba(13,15,19,0.85)" if dark_mode else "rgba(255,255,255,0.55)"};
+  backdrop-filter: blur(8px);
+  border: 1px solid {"rgba(255,255,255,0.08)" if dark_mode else "rgba(255,255,255,0.6)"};
+  border-radius: 14px;
+  box-shadow: 0 10px 24px rgba(0,0,0,.12);
+}
+.brand {{
+  display: flex; align-items: center; gap: 10px;
+}}
+.brand .title {{
+  font-weight: 800; letter-spacing: .2px; font-size: 1.05rem; color: {"#F9FAFB" if dark_mode else "#111827"};
+}}
+.brand .subtitle {{
+  font-size: .82rem; color: {"rgba(255,255,255,.9)" if dark_mode else "#374151"};
+}}
+.nav-links a {{
+  display:inline-block; padding: 8px 10px; margin: 0 2px; border-radius: 10px; 
+  text-decoration: none; font-weight: 600; font-size:.92rem;
+  color: {"#F9FAFB" if dark_mode else "#111827"};
+}}
+.nav-links a:hover {{
+  background: {"rgba(255,255,255,0.12)" if dark_mode else "rgba(0,0,0,0.06)"};
+}}
+
+/* ===== Hero ===== */
 .app-hero {{
-  border-radius: 20px;
-  padding: 24px 28px;
+  border-radius: 18px;
+  padding: 20px 22px;
   color: white;
   background:
-     radial-gradient(1000px 200px at 10% -20%, rgba(255,204,0,0.15), transparent),
-     radial-gradient(1000px 200px at 90% -20%, rgba(217,4,41,0.18), transparent),
-     linear-gradient(90deg, var(--angola-red), var(--angola-black) 80%);
-  box-shadow: 0 12px 30px rgba(0,0,0,.18);
-  display:flex; align-items:center; gap:16px;
-}}
-.app-hero h1 {{ margin:0; font-size: 1.6rem; letter-spacing:.2px; }}
-.app-hero .sub {{ opacity:.9; margin-top: 4px; font-size:.95rem; }}
+    radial-gradient(900px 180px at 12% -18%, rgba(255,204,0,0.18), transparent),
+    radial-gradient(900px 180px at 88% -18%, rgba(217,4,41,0.22), transparent),
+    linear-gradient(90deg, var(--angola-red), var(--angola-black) 80%);
+  box-shadow: 0 12px 28px rgba(0,0,0,.16);
+  display:flex; align-items:center; justify-content:space-between; gap:16px;
+  margin-bottom: 8px;
+}
+.app-hero h1 {{ margin:0; font-size: 1.4rem; letter-spacing:.1px; }}
+.app-hero .sub {{ opacity:.95; margin-top: 4px; font-size:.9rem; }}
 
+/* ===== Seções ===== */
+.section {{ scroll-margin-top: 90px; margin-top: 18px; }}
 .section .title {{ font-size: 1.08rem; font-weight: 800; color: var(--text); margin: 12px 0 8px; }}
 
-.kpi-grid {{ display:grid; grid-template-columns: repeat(6, 1fr); gap:12px; }}
+/* ===== KPI Grid (mais respiro) ===== */
+.kpi-grid {{
+  display:grid; grid-template-columns: repeat(6, 1fr);
+  gap: 18px; margin: 12px 2px 16px 2px;
+}}
 @media (max-width: 1200px) {{ .kpi-grid {{ grid-template-columns: repeat(3, 1fr); }} }}
 @media (max-width: 768px)  {{ .kpi-grid {{ grid-template-columns: repeat(2, 1fr); }} }}
 
 .kpi-card {{
-  padding: 14px 16px; border-radius: 16px;
-  background: {("#11161d" if dark_mode else "rgba(255,255,255,.35)")};
+  padding: 16px 18px; border-radius: 16px;
+  background: {"#11161d" if dark_mode else "rgba(255,255,255,.45)"};
   backdrop-filter: blur(6px);
-  border: 1px solid {("rgba(255,255,255,.08)" if dark_mode else "rgba(255,255,255,.55)")};
-  box-shadow: 0 8px 24px rgba(0,0,0,.10);
+  border: 1px solid {"rgba(255,255,255,.10)" if dark_mode else "rgba(255,255,255,.65)"};
+  box-shadow: 0 10px 26px rgba(0,0,0,.10);
 }}
 .kpi-title {{ font-size: .9rem; color: var(--sub); margin-bottom: .25rem; }}
-.kpi-value {{ font-size: clamp(1rem, 2.3vw, 1.7rem); font-weight: 800; color: var(--text); line-height:1.1; }}
+.kpi-value {{ font-size: clamp(1rem, 2.4vw, 1.75rem); font-weight: 800; color: var(--text); line-height:1.08; }}
 
+/* ===== Card padrão (gráficos/caixas) ===== */
 .card {{
-  padding: 14px; border-radius: 16px;
-  background: {("#12161d" if dark_mode else "rgba(255,255,255,.55)")};
+  padding: 16px; border-radius: 16px; margin: 8px 0 16px 0;
+  background: {"#12161d" if dark_mode else "rgba(255,255,255,.6)"};
   backdrop-filter: blur(6px);
-  border: 1px solid {("rgba(255,255,255,.09)" if dark_mode else "rgba(255,255,255,.65)")};
-  box-shadow: 0 8px 24px rgba(0,0,0,.08);
+  border: 1px solid {"rgba(255,255,255,.10)" if dark_mode else "rgba(255,255,255,.68)"};
+  box-shadow: 0 10px 26px rgba(0,0,0,.08);
 }}
 
-.badge {{
-  display:inline-block; padding: 4px 8px; border-radius: 999px;
-  background: rgba(0,0,0,.08); color: var(--text); font-size:.78rem; margin-left:6px;
+/* ===== Footer ===== */
+.footer {{
+  margin-top: 26px;
+  border-radius: 14px;
+  padding: 12px 14px;
+  color: white;
+  background: linear-gradient(90deg, var(--angola-black), var(--angola-red) 90%);
+  display:flex; align-items:center; justify-content:space-between; gap:10px;
+  box-shadow: 0 10px 24px rgba(0,0,0,.12);
+}}
+.footer .left {{ font-size: .92rem; opacity: .95; }}
+.footer .right a {{
+  color: #ffe58a; text-decoration: none; font-weight: 600; margin-left: 12px;
+}}
+.footer .right a:hover {{ text-decoration: underline; }}
+
+/* Sidebar blend */
+[data-testid="stSidebar"] {{
+  background: {"#0b0e13" if dark_mode else "rgba(255,255,255,0.65)"};
+  backdrop-filter: blur(6px);
 }}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+# --------------------- NAVBAR / FOOTER -------------------------
+def render_topbar():
+    st.markdown(
+        """
+        <div class="topbar">
+          <div class="brand">
+            <span class="title">Comércio Externo de Angola — 2022</span>
+          </div>
+          <div class="nav-links">
+            <a href="#visao-geral">Visão Geral</a>
+            <a href="#parceiros">Parceiros</a>
+            <a href="#produtos">Produtos</a>
+            <a href="#regioes">Regiões</a>
+            <a href="#dados">Dados</a>
+          </div>
+        </div>
+        """, unsafe_allow_html=True
+    )
+
+def render_footer():
+    st.markdown(
+        """
+        <div class="footer">
+          <div class="left">Fonte: INE (Angola), 2022. Visual by Angola Trade Analytics.</div>
+          <div class="right"><a href="#visao-geral">Topo</a></div>
+        </div>
+        """, unsafe_allow_html=True
+    )
 
 # --------------------- MAPEAMENTO / EXCEÇÕES -------------------
 MAPEAMENTO_COLUNAS = {
@@ -464,6 +550,7 @@ def gerar_kpis(df_filtered: pd.DataFrame, moeda: str, meses_sel: List[int]) -> N
     st.markdown(f'<div class="kpi-card" title="Variação m/m do comércio total no último mês do filtro."><div class="kpi-title">↕️ Variação m/m</div><div class="kpi-value">{var_text}</div></div>', unsafe_allow_html=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
+# (Reaproveito gerar_insights/gerar_recomendacoes da v1.5)
 def gerar_insights(df: pd.DataFrame, fluxo_ref: str) -> List[str]:
     insights = []
     if df.empty: return ["Sem valores no filtro atual."]
@@ -506,21 +593,29 @@ def gerar_recomendacoes(df: pd.DataFrame) -> List[str]:
     if not top_partner.empty:
         nome = top_partner.index[0]
         recs.append(f"**Gestão de risco com {nome}**: negociar contratos, seguro de crédito e monitorar logística.")
-    # Exemplo de leitura regional
     if (df["iso3"].isin(SADC)).any():
         recs.append("**Aprofundar integração SADC** (regras de origem, facilitação aduaneira) para reduzir custos.")
     return recs
 
 # --------------------- APP ---------------------
 def main():
-    # HERO / Cabeçalho
+    # ===== Header / Navbar =====
+    render_topbar()
+
+    # ===== Hero =====
     if website_mode:
         c1, c2 = st.columns([1,6])
         with c1:
             if os.path.exists("insignia_angola.png"):
                 st.image("insignia_angola.png", use_column_width=False)
         with c2:
-            st.markdown('<div class="app-hero"><div><h1>Comércio Externo de Angola — 2022</h1><div class="sub">Análise mensal do INE com conversão AOA⇄USD e visual executivo.</div></div></div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="app-hero">'
+                '<div><h1>Comércio Externo de Angola — 2022</h1>'
+                '<div class="sub">Análise mensal do INE, com conversão AOA⇄USD, KPIs e mapas. Layout executivo.</div>'
+                '</div></div>',
+                unsafe_allow_html=True
+            )
     else:
         st.title("Comércio Externo de Angola — 2022")
         st.caption("Fonte: INE (Angola), 2022.")
@@ -610,8 +705,11 @@ def main():
 
     # ----- Visão Geral -----
     with tab1:
+        st.markdown('<div id="visao-geral" class="section"></div>', unsafe_allow_html=True)
+
         # KPIs
         gerar_kpis(df_f, moeda, st.session_state["meses_sel"])
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
         # Série temporal
         st.markdown('<div class="section"><div class="title">📈 Série temporal (2022)</div></div>', unsafe_allow_html=True)
@@ -622,6 +720,7 @@ def main():
         st.markdown('</div>', unsafe_allow_html=True)
 
         # Balança
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
         st.markdown('<div class="section"><div class="title">📉 Balança mensal (colunas + linha)</div></div>', unsafe_allow_html=True)
         st.markdown('<div class="card">', unsafe_allow_html=True)
         fig_bal = plot_balanca_mensal(aggs["monthly_flow"], moeda)
@@ -646,6 +745,7 @@ def main():
 
     # ----- Parceiros -----
     with tab2:
+        st.markdown('<div id="parceiros" class="section"></div>', unsafe_allow_html=True)
         fluxo_ref = st.session_state["fluxo_sel"] if st.session_state["fluxo_sel"] in {"Exportações","Importações"} else "Exportações"
         col1, col2 = st.columns(2)
         with col1:
@@ -672,6 +772,8 @@ def main():
 
     # ----- Produtos -----
     with tab3:
+        st.markdown('<div id="produtos" class="section"></div>', unsafe_allow_html=True)
+        fluxo_ref = st.session_state["fluxo_sel"] if st.session_state["fluxo_sel"] in {"Exportações","Importações"} else "Exportações"
         col1, col2 = st.columns(2)
         with col1:
             st.markdown('<div class="section"><div class="title">🧩 Top Produtos</div></div>', unsafe_allow_html=True)
@@ -695,6 +797,7 @@ def main():
 
     # ----- Regiões -----
     with tab4:
+        st.markdown('<div id="regioes" class="section"></div>', unsafe_allow_html=True)
         col1, col2 = st.columns(2)
         with col1:
             st.markdown('<div class="section"><div class="title">🧭 Regiões/Blocos</div></div>', unsafe_allow_html=True)
@@ -713,6 +816,7 @@ def main():
 
     # ----- Dados -----
     with tab5:
+        st.markdown('<div id="dados" class="section"></div>', unsafe_allow_html=True)
         st.markdown('<div class="section"><div class="title">📋 Dados filtrados</div></div>', unsafe_allow_html=True)
         st.markdown('<div class="card">', unsafe_allow_html=True)
         termo = st.text_input("🔍 Buscar (parceiro/produto)", "")
@@ -725,8 +829,8 @@ def main():
         st.download_button("⬇️ Baixar CSV filtrado", data=csv_bytes, file_name="dados_filtrados.csv", mime="text/csv")
         st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.caption("Fonte: INE (Angola), 2022.")
+    # ===== Footer =====
+    render_footer()
 
 if __name__ == "__main__":
     main()
