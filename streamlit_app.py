@@ -153,33 +153,62 @@ html, body, [data-testid="stAppViewContainer"]{
 </style>
 """
 
-BACKGROUND_CSS = """
+BG_URL = "https://unsplash.com/photos/aerial-top-view-containers-ship-cargo-business-commercial-trade-logistic-and-transportation-of-international-import-export-by-container-freight-cargo-ship-in-the-open-seaport-1Iutku2nQKg"  # skyline Luanda (executivo)
+
+BACKGROUND_CSS = f"""
 <style>
-[data-testid="stAppViewContainer"] {
-  background-image: url("https://unsplash.com/photos/aerial-top-view-containers-ship-cargo-business-commercial-trade-logistic-and-transportation-of-international-import-export-by-container-freight-cargo-ship-in-the-open-seaport-1Iutku2nQKg");
-  background-size: cover;
-  background-position: center;
-  /*filter: blur(4px) brightness(0.6);*/
-  /* Aplique blur e escurecimento para destacar o conteúdo 
+/* 1) Deixe o contêiner PRINCIPAL transparente para a imagem aparecer por trás */
+[data-testid="stAppViewContainer"] {{
+  background: transparent !important;
+}}
+/* Header e sidebar transparentes (ou semitransparentes) */
+[data-testid="stHeader"] {{
+  background: transparent !important;
+}}
+[data-testid="stSidebar"] {{
+  background: rgba(10, 16, 28, 0.70) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}}
+
+/* 2) A IMAGEM fica num pseudo-elemento do ROOT .stApp — fixo atrás de tudo */
+.stApp::before {{
+  content: "";
   position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: -1;*/
-}
+  inset: 0;                      /* top/right/bottom/left = 0 */
+  z-index: -1;                   /* fica atrás do app */
+  background:
+    linear-gradient(rgba(6,12,24,0.55), rgba(6,12,24,0.55)),
+    url('{BG_URL}') center / cover no-repeat fixed;
+  filter: blur(6px);             /* blur só no fundo */
+  transform: scale(1.03);        /* evita bordas do blur */
+  pointer-events: none;
+}}
 
-[data-testid="stAppViewContainer"] > .main {
+/* 3) Garante que o conteúdo do app ESTÁ ACIMA do fundo */
+[data-testid="stAppViewContainer"] > .main {{
   position: relative;
-  z-index: 1;
-}
+  z-index: 0;
+}}
 
-/* Sidebar com leve transparência para visibilidade */
-[data-testid="stSidebar"] {
-  background-color: rgba(24, 35, 54, 0.75);
-}
+/* 4) Cards com glassmorphism suave para legibilidade */
+.block, .kpi-card, .navbar {{
+  background: rgba(16, 24, 38, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.06);
+}}
+
+/* 5) Texto mais legível sobre fundo escuro */
+html, body, [data-testid="stAppViewContainer"] {{
+  color: #e7eefb;
+}}
 </style>
 """
+
+# no começo do main()
+
+
 
 NAVBAR_HTML = """
 <div class="navbar">
