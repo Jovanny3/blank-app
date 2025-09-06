@@ -159,7 +159,7 @@ BACKGROUND_CSS = """
   background-image: url("https://unsplash.com/photos/aerial-top-view-containers-ship-cargo-business-commercial-trade-logistic-and-transportation-of-international-import-export-by-container-freight-cargo-ship-in-the-open-seaport-1Iutku2nQKg");
   background-size: cover;
   background-position: center;
-  filter: blur(4px) brightness(0.6);
+  /*filter: blur(4px) brightness(0.6);*/
   /* Aplique blur e escurecimento para destacar o conteúdo 
   position: fixed;
   top: 0;
