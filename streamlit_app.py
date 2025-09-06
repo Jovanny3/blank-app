@@ -153,25 +153,24 @@ html, body, [data-testid="stAppViewContainer"]{
 </style>
 """
 
-def render_navbar():
-    st.markdown(TEMPLATE_CSS + """
-    <div class="navbar">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
-        <div class="brand">
-          <span>📊 Comércio Externo de Angola</span>
-          <span class="badge">Ano-base: 2022</span>
-          <span class="tag">v1.6.3</span>
-        </div>
-        <div class="links">
-          <a href="#kpis">KPIs</a>
-          <a href="#fluxos-mensais">Fluxos mensais</a>
-          <a href="#parceiros">Parceiros</a>
-          <a href="#produtos">Produtos</a>
-          <a href="#recomendacoes">Recomendações</a>
-        </div>
-      </div>
+NAVBAR_HTML = """
+<div class="navbar">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
+    <div class="brand">
+      <span>📊 Comércio Externo de Angola</span>
+      <span class="badge">Ano-base: 2022</span>
+      <span class="tag">v1.6.3</span>
     </div>
-    """, unsafe_allow_html=True)
+    <div class="links">
+      <a href="#kpis">KPIs</a>
+      <a href="#fluxos-mensais">Fluxos mensais</a>
+      <a href="#parceiros">Parceiros</a>
+      <a href="#produtos">Produtos</a>
+      <a href="#recomendacoes">Recomendações</a>
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # App
