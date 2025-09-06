@@ -153,6 +153,34 @@ html, body, [data-testid="stAppViewContainer"]{
 </style>
 """
 
+BACKGROUND_CSS = """
+<style>
+[data-testid="stAppViewContainer"] {
+  background-image: url("https://images.unsplash.com/photo-1581931161361-1a74bbea4b49?auto=format&fit=crop&w=1200&q=80");
+  background-size: cover;
+  background-position: center;
+  filter: blur(4px) brightness(0.6);
+  /* Aplique blur e escurecimento para destacar o conteúdo */
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+}
+
+[data-testid="stAppViewContainer"] > .main {
+  position: relative;
+  z-index: 1;
+}
+
+/* Sidebar com leve transparência para visibilidade */
+[data-testid="stSidebar"] {
+  background-color: rgba(24, 35, 54, 0.75);
+}
+</style>
+"""
+
 NAVBAR_HTML = """
 <div class="navbar">
   <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
@@ -181,6 +209,7 @@ def render_navbar():
 # App
 # -----------------------------------------------------------------------------
 def main():
+    st.markdown(BACKGROUND_CSS, unsafe_allow_html=True)
     render_navbar()
 
     # Sidebar
