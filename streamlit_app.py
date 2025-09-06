@@ -170,7 +170,12 @@ NAVBAR_HTML = """
     </div>
   </div>
 </div>
-""", unsafe_allow_html=True)
+"""
+
+def render_navbar():
+    import streamlit as st
+    st.markdown(TEMPLATE_CSS, unsafe_allow_html=True)
+    st.markdown(NAVBAR_HTML, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
 # App
