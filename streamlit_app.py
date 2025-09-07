@@ -1,6 +1,6 @@
 # app.py — Comércio Externo de Angola — 2022
-# v1.7.0 (background local dinâmico + melhorias)
-# Requisitos: streamlit>=1.31, pandas, altair, plotly
+# v1.7.1 (gradiente sólido de fundo + funcionalidades anteriores)
+# Requisitos: streamlit>=1.31, pandas, altair, plotly, openpyxl
 
 import streamlit as st
 import pandas as pd
@@ -10,9 +10,6 @@ import plotly.express as px
 from io import BytesIO
 from zipfile import ZipFile, ZIP_DEFLATED
 from datetime import datetime
-from pathlib import Path
-import base64
-import mimetypes
 
 # -----------------------------------------------------------------------------
 # Config
@@ -100,21 +97,15 @@ def taxas_stub():
     return pd.DataFrame(data)
 
 def converter_moeda(df: pd.DataFrame, moeda: str, taxas: pd.DataFrame) -> pd.DataFrame:
-    """
-    Converte colunas numéricas conhecidas para a 'moeda' escolhida.
-    Faz UM ÚNICO merge com (Ano,Mês) e aplica a taxa.
-    """
     if moeda == "AOA":
         return df.copy()
 
     out = df.copy()
     cols_convert = [c for c in ["Exportações","Importações","Valor","Valor Exportado"] if c in out.columns]
 
-    # merge ÚNICO
     tx = taxas[["Ano","Mês",moeda]].copy()
     out = out.merge(tx, on=["Ano","Mês"], how="left")
 
-    # aplicar taxa
     rate = out[moeda].replace({0: np.nan})
     for c in cols_convert:
         out[c] = (out[c] / rate).round(2)
@@ -124,92 +115,51 @@ def converter_moeda(df: pd.DataFrame, moeda: str, taxas: pd.DataFrame) -> pd.Dat
     return out
 
 # -----------------------------------------------------------------------------
-# Background local (Base64) — lista de imagens e CSS dinâmico
+# Background com gradiente sólido
 # -----------------------------------------------------------------------------
-@st.cache_data(show_spinner=False)
-def list_local_images(assets_dir: Path) -> list[Path]:
-    exts = (".jpg", ".jpeg", ".png", ".webp")
-    if not assets_dir.exists():
-        return []
-    files = [p for p in assets_dir.iterdir() if p.suffix.lower() in exts and p.is_file()]
-    # ordena alfabeticamente
-    return sorted(files, key=lambda p: p.name.lower())
-
-@st.cache_data(show_spinner=False)
-def to_data_url(path: Path) -> str:
-    mime, _ = mimetypes.guess_type(path.name)
-    if mime is None:
-        # fallback pelo sufixo
-        if path.suffix.lower() in (".jpg", ".jpeg"):
-            mime = "image/jpeg"
-        elif path.suffix.lower() == ".png":
-            mime = "image/png"
-        elif path.suffix.lower() == ".webp":
-            mime = "image/webp"
-        else:
-            mime = "application/octet-stream"
-    b64 = base64.b64encode(path.read_bytes()).decode("utf-8")
-    return f"data:{mime};base64,{b64}"
-
-def build_background_css(bg_data_url: str, overlay_opacity: float, blur_px: int) -> str:
+def build_gradient_css(color_a: str, color_b: str, angle_deg: int, blur_px: int) -> str:
+    css = f"""
+    <style>
+    [data-testid="stAppViewContainer"] {{
+      background: transparent !important;
+    }}
+    [data-testid="stHeader"] {{
+      background: transparent !important;
+    }}
+    [data-testid="stSidebar"] {{
+      background: rgba(10,16,28,0.70) !important;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }}
+    .stApp::before {{
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background: linear-gradient({angle_deg}deg, {color_a}, {color_b});
+      filter: blur({blur_px}px);
+      transform: scale(1.02);
+    }}
+    .block, .kpi-card, .navbar {{
+      background: rgba(16,24,38,0.78);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.06);
+    }}
+    html, body, [data-testid="stAppViewContainer"] {{
+      color: #e7eefb;
+    }}
+    </style>
     """
-    Constrói CSS sem f-string no corpo do CSS (usa placeholders e replace).
-    """
-    css_template = """
-<style>
-/* Tornar container transparente para a imagem aparecer */
-[data-testid="stAppViewContainer"] {
-  background: transparent !important;
-}
-[data-testid="stHeader"] {
-  background: transparent !important;
-}
-[data-testid="stSidebar"] {
-  background: rgba(10,16,28,0.70) !important;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}
-
-/* Imagem de fundo (local, base64) + overlay escuro + blur */
-.stApp::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background:
-    linear-gradient(rgba(6,12,24,__OVERLAY__), rgba(6,12,24,__OVERLAY__)),
-    url("__BG__") center / cover no-repeat fixed;
-  filter: blur(__BLUR__px);
-  transform: scale(1.03);
-}
-
-/* Glass nos cartões para legibilidade */
-.block, .kpi-card, .navbar {
-  background: rgba(16,24,38,0.78);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255,255,255,0.06);
-}
-
-/* Texto */
-html, body, [data-testid="stAppViewContainer"] {
-  color: #e7eefb;
-}
-</style>
-""".strip()
-
-    css = css_template.replace("__BG__", bg_data_url)\
-                      .replace("__OVERLAY__", f"{overlay_opacity:.2f}")\
-                      .replace("__BLUR__", str(int(blur_px)))
     return css
 
 # -----------------------------------------------------------------------------
-# CSS base (cores/componentes)
+# CSS base e Navbar
 # -----------------------------------------------------------------------------
 TEMPLATE_CSS = """
 <style>
-:root{ --primary:#0ea5e9; --bg:#0b1220; --card:#101826; --muted:#8aa1c1;
+:root{ --primary:#0ea5e9; --card:#101826; --muted:#8aa1c1;
        --accent:#22c55e; --warn:#f59e0b; --danger:#ef4444; }
 .navbar{ position: sticky; top: 0; z-index: 999; backdrop-filter: blur(6px);
   background: rgba(16, 24, 38, 0.72); border-bottom: 1px solid #172236;
@@ -237,7 +187,7 @@ NAVBAR_HTML = """
     <div class="brand">
       <span>📊 Comércio Externo de Angola</span>
       <span class="badge">Ano-base: 2022</span>
-      <span class="tag">v1.7.0</span>
+      <span class="tag">v1.7.1</span>
     </div>
     <div class="links">
       <a href="#kpis">KPIs</a>
@@ -258,41 +208,17 @@ def render_navbar():
 # App
 # -----------------------------------------------------------------------------
 def main():
-    # ====== Sidebar: Fundo local ======
-    st.sidebar.header("🎨 Fundo da aplicação (local)")
-    assets_dir = Path("assets")
-    files = list_local_images(assets_dir)
+    # === Sidebar: fundo gradiente ===
+    st.sidebar.header("🎨 Fundo (gradiente sólido)")
+    color_a = st.sidebar.color_picker("Cor A", "#0b1220")
+    color_b = st.sidebar.color_picker("Cor B", "#0d1424")
+    angle   = st.sidebar.slider("Ângulo (°)", 0, 360, 135, 5)
+    blur    = st.sidebar.slider("Blur do fundo (px)", 0, 20, 6, 1)
 
-    if not files:
-        st.sidebar.warning("Coloque imagens em ./assets (jpg, png, webp). Usando fundo padrão sem imagem.")
-        bg_data_url = "data:image/svg+xml;base64," + base64.b64encode(
-            """<svg xmlns='http://www.w3.org/2000/svg' width='1920' height='1080'>
-                 <defs><linearGradient id='g' x1='0' x2='0' y1='0' y2='1'>
-                   <stop offset='0%' stop-color='#0b1220'/><stop offset='100%' stop-color='#0d1424'/>
-                 </linearGradient></defs>
-                 <rect width='100%' height='100%' fill='url(#g)'/>
-               </svg>""".encode("utf-8")
-        ).decode("utf-8")
-    else:
-        names = [p.name for p in files]
-        choice = st.sidebar.selectbox("Escolha a imagem", names, index=0)
-        sel_path = next(p for p in files if p.name == choice)
-        try:
-            bg_data_url = to_data_url(sel_path)
-        except Exception as e:
-            st.sidebar.error(f"Falha ao ler {sel_path.name}: {e}")
-            bg_data_url = ""
-
-    overlay = st.sidebar.slider("Opacidade do overlay", 0.0, 0.8, 0.45, 0.05)
-    blur_px = st.sidebar.slider("Nível de blur (px)", 0, 20, 6, 1)
-
-    # Injetar CSS do background (sem f-strings no CSS)
-    st.markdown(build_background_css(bg_data_url, overlay, blur_px), unsafe_allow_html=True)
-
-    # Navbar (depois do CSS)
+    st.markdown(build_gradient_css(color_a, color_b, angle, blur), unsafe_allow_html=True)
     render_navbar()
 
-    # ====== Filtros principais ======
+    # === Sidebar: filtros ===
     st.sidebar.header("🔎 Filtros")
     perfil = st.sidebar.selectbox("Perfil de utilizador", ["Investidor","Gestor Público","Académico"], index=1)
     anos = st.sidebar.multiselect("Anos (comparação temporal)", [2020,2021,2022,2023,2024], default=[2022])
@@ -301,7 +227,7 @@ def main():
     moeda = st.sidebar.selectbox("Moeda", ["AOA","USD","EUR"], index=0)
 
     st.sidebar.markdown("#### 📥 Taxas BNA (opcional)")
-    up_tx = st.sidebar.file_uploader("Carregar CSV (colunas: Ano,Mês,USD,EUR)", type=["csv"], accept_multiple_files=False)
+    up_tx = st.sidebar.file_uploader("Carregar CSV (colunas: Ano,Mês,USD,EUR)", type=["csv"])
 
     taxas = taxas_stub()
     if up_tx is not None:
@@ -311,11 +237,11 @@ def main():
                 taxas = taxas_user.copy()
                 st.sidebar.success("Taxas BNA carregadas.")
             else:
-                st.sidebar.error("CSV inválido. Necessita colunas: Ano,Mês,USD,EUR.")
+                st.sidebar.error("CSV inválido. Colunas esperadas: Ano,Mês,USD,EUR.")
         except Exception as e:
-            st.sidebar.error(f"Falha ao ler CSV: {e}")
+            st.sidebar.error(f"Erro ao ler CSV: {e}")
 
-    # ====== Dados ======
+    # === Dados ===
     df_flow, df_partners, df_products = load_sample_data(anos)
 
     # ===================== KPIs =====================
@@ -332,7 +258,6 @@ def main():
 
     totals = (df_flow_conv.groupby("Ano")[["Exportações","Importações"]]
               .sum().reset_index())
-    totals = dedup_cols(totals)
     totals["Balança"] = totals["Exportações"] - totals["Importações"]
     totals["Cobertura_%"] = (totals["Exportações"] / totals["Importações"] * 100).round(1)
 
@@ -392,109 +317,4 @@ def main():
 
     # ===================== Parceiros + Choropleth =====================
     st.markdown('<div id="parceiros"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="block">', unsafe_allow_html=True)
-    st.markdown("### Principais parceiros comerciais")
-    dfp = df_partners[df_partners["Ano"]==ano_focus].copy()
-    if moeda != "AOA":
-        tx_ano = taxas.loc[taxas["Ano"]==ano_focus, ["USD","EUR"]].mean()
-        rate = tx_ano["USD"] if moeda=="USD" else tx_ano["EUR"]
-        dfp["Exportações"] = (dfp["Exportações"]/rate).round(2)
-    # Importações
-        dfp["Importações"] = (dfp["Importações"]/rate).round(2)
-
-    c1, c2 = st.columns([1,1], gap="medium")
-    with c1:
-        st.altair_chart(
-            alt.Chart(dfp.sort_values("Exportações", ascending=False))
-               .mark_bar()
-               .encode(x=alt.X("Exportações:Q", title=f"Exportações ({moeda})"),
-                       y=alt.Y("Parceiro:N", sort="-x"),
-                       tooltip=["Parceiro","Exportações"])
-               .properties(height=280),
-            use_container_width=True
-        )
-    with c2:
-        st.altair_chart(
-            alt.Chart(dfp.sort_values("Importações", ascending=False))
-               .mark_bar()
-               .encode(x=alt.X("Importações:Q", title=f"Importações ({moeda})"),
-                       y=alt.Y("Parceiro:N", sort="-x"),
-                       tooltip=["Parceiro","Importações"])
-               .properties(height=280),
-            use_container_width=True
-        )
-
-    df_map = dfp.copy()
-    df_map["Fluxo"] = df_map["Exportações"] + df_map["Importações"]
-    df_map["Fluxo_log"] = np.log1p(df_map["Fluxo"])
-    st.plotly_chart(
-        px.choropleth(df_map, locations="ISO3", color="Fluxo_log",
-                      hover_name="Parceiro", color_continuous_scale="Blues",
-                      title=f"Fluxo Total ({moeda}) por Parceiro — {ano_focus}"),
-        use_container_width=True
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # ===================== Produtos (HS) =====================
-    st.markdown('<div id="produtos"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="block">', unsafe_allow_html=True)
-    st.markdown("### Drill-down por HS-Code (Exportações)")
-    dfr = df_products[df_products["Ano"]==ano_focus].copy()
-    cap = st.selectbox("Capítulo HS", sorted(dfr["Capítulo HS"].unique()))
-    df_cap = dfr[dfr["Capítulo HS"]==cap].copy()
-    st.dataframe(df_cap[["Capítulo HS","Posição HS","Valor Exportado"]],
-                 use_container_width=True, hide_index=True)
-    st.altair_chart(
-        alt.Chart(df_cap.sort_values("Valor Exportado", ascending=False))
-           .mark_bar()
-           .encode(x=alt.X("Valor Exportado:Q", title=f"Valor Exportado ({moeda})"),
-                   y=alt.Y("Posição HS:N", sort="-x"),
-                   tooltip=["Posição HS","Valor Exportado"])
-           .properties(height=280),
-        use_container_width=True
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # ===================== Exportação =====================
-    st.markdown('<div class="block">', unsafe_allow_html=True)
-    st.markdown("### Exportação de dados")
-    cexp1, cexp2 = st.columns(2)
-    with cexp1:
-        st.download_button(
-            "⬇️ Exportar Fluxos (CSV)",
-            data=dedup_cols(df_flow).to_csv(index=False).encode("utf-8"),
-            file_name=f"fluxos_{'-'.join(map(str,anos))}.csv",
-            mime="text/csv"
-        )
-    with cexp2:
-        payload, fname, mime = to_xlsx_or_zip({"Fluxos": df_flow, "Parceiros": df_partners, "Produtos": df_products})
-        st.download_button(f"⬇️ Exportar {'Tudo (XLSX)' if fname.endswith('.xlsx') else 'Tudo (ZIP/CSVs)'}",
-                           data=payload, file_name=fname, mime=mime)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # ===================== Recomendações =====================
-    st.markdown('<div id="recomendacoes"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="block">', unsafe_allow_html=True)
-    st.markdown("### Recomendações (roadmap)")
-    st.markdown("""
-- **Conexão a dados oficiais (INE/AGT)**: adicionar leitor `@st.cache_data` para CSV/XLSX oficiais e normalização (`Ano`, `Mês`, `Exportações`, `Importações`).
-- **Conversão cambial**: substituir `taxas_stub()` por série BNA; validar duplicados de `Ano,Mês` e recusar ficheiros com linhas duplicadas.
-- **HS-Code**: _join_ com tabela HS (capítulo/posição) até 6 dígitos para drill-down completo.
-- **Mapa**: escalar `Fluxo` com opção linear/log; tooltips com Exp/Imp.
-- **Alertas & metas**: persistir metas por perfil/ano (SQLite ou `st.session_state`).
-- **Exportação**: relatório HTML com gráficos (Altair/Plotly) e branding institucional.
-- **Perfis**: presets de metas/indicadores (Investidor → produtos; Gestor → cobertura; Académico → séries).
-    """)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # ===================== Footer =====================
-    st.markdown(f"""
-    <div class="footer">
-      <div>© {datetime.now().year} • Dashboard de Comércio Externo de Angola — <span class="badge">v1.7.0</span></div>
-      <div>Streamlit • Altair • Plotly</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# -----------------------------------------------------------------------------
-if __name__ == "__main__":
-    main()
+    st.markdown('<div class="block">', unsafe_allow_html=True
