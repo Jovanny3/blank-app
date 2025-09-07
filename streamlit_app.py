@@ -153,15 +153,29 @@ html, body, [data-testid="stAppViewContainer"]{
 </style>
 """
 
-BG_URL = "https://unsplash.com/photos/aerial-top-view-containers-ship-cargo-business-commercial-trade-logistic-and-transportation-of-international-import-export-by-container-freight-cargo-ship-in-the-open-seaport-1Iutku2nQKg"  # skyline Luanda (executivo)
+  # skyline Luanda (executivo)
+
+# --- CONTROLES RÁPIDOS NA SIDEBAR (opcional, mas útil) ---
+st.sidebar.markdown("### 🎨 Fundo")
+overlay = st.sidebar.slider("Opacidade do overlay (0=claro, 0.8=escuro)", 0.0, 0.8, 0.45, 0.05)
+
+# 1) URL principal (estático e confiável)
+BG_URL_1 = "https://unsplash.com/photos/aerial-top-view-containers-ship-cargo-business-commercial-trade-logistic-and-transportation-of-international-import-export-by-container-freight-cargo-ship-in-the-open-seaport-1Iutku2nQKg"
+
+
+# 2) Fallback (segundo URL caso o primeiro não carregue)
+BG_URL_2 = "https://images.unsplash.com/photo-1531297484001-80022131f5a1?q=80&w=1920&auto=format&fit=crop"
+
+# 3) Você pode colar um URL próprio aqui (opcional)
+bg_url_custom = st.sidebar.text_input("URL de imagem (opcional)", value="", placeholder="https://.../minha-imagem.jpg")
+BG_URL = bg_url_custom.strip() or BG_URL_1
 
 BACKGROUND_CSS = f"""
 <style>
-/* 1) Deixe o contêiner PRINCIPAL transparente para a imagem aparecer por trás */
+/* tornar contêiner transparente, para a imagem aparecer por trás */
 [data-testid="stAppViewContainer"] {{
   background: transparent !important;
 }}
-/* Header e sidebar transparentes (ou semitransparentes) */
 [data-testid="stHeader"] {{
   background: transparent !important;
 }}
@@ -171,27 +185,42 @@ BACKGROUND_CSS = f"""
   -webkit-backdrop-filter: blur(8px);
 }}
 
-/* 2) A IMAGEM fica num pseudo-elemento do ROOT .stApp — fixo atrás de tudo */
+/* camada de fundo fixa usando ::before — com fallback */
 .stApp::before {{
   content: "";
   position: fixed;
-  inset: 0;                      /* top/right/bottom/left = 0 */
-  z-index: -1;                   /* fica atrás do app */
-  background:
-    linear-gradient(rgba(6,12,24,0.55), rgba(6,12,24,0.55)),
-    url('{BG_URL}') center / cover no-repeat fixed;
-  filter: blur(6px);             /* blur só no fundo */
-  transform: scale(1.03);        /* evita bordas do blur */
+  inset: 0;
+  z-index: -1;
   pointer-events: none;
+
+  /* TENTATIVA 1: imagem principal + overlay */
+  background:
+    linear-gradient(rgba(6,12,24,{overlay}), rgba(6,12,24,{overlay})),
+    url('{BG_URL}') center / cover no-repeat fixed;
+
+  /* Se a 1ª imagem falhar, fica só o overlay por um instante,
+     mas abaixo temos uma segunda camada (via @supports) para fallback */
+  filter: blur(6px);
+  transform: scale(1.03);
 }}
 
-/* 3) Garante que o conteúdo do app ESTÁ ACIMA do fundo */
-[data-testid="stAppViewContainer"] > .main {{
-  position: relative;
-  z-index: 0;
+/* Fallback CSS para navegadores que suportam múltiplos backgrounds encadeados
+   de forma robusta. Forçamos uma segunda tentativa (BG_URL_2) por baixo.
+   OBS: quando a primeira carrega, esta camada quase não aparece. */
+@supports (background: paint(houdini)) {{
+  .stApp::before {{
+    background:
+      linear-gradient(rgba(6,12,24,{overlay}), rgba(6,12,24,{overlay})),
+      url('{BG_URL}'),
+      url('{BG_URL_2}');
+    background-position: center, center, center;
+    background-size: cover, cover, cover;
+    background-repeat: no-repeat, no-repeat, no-repeat;
+    background-attachment: fixed, fixed, fixed;
+  }}
 }}
 
-/* 4) Cards com glassmorphism suave para legibilidade */
+/* cartões com glassmorphism para legibilidade */
 .block, .kpi-card, .navbar {{
   background: rgba(16, 24, 38, 0.78);
   backdrop-filter: blur(10px);
@@ -199,12 +228,14 @@ BACKGROUND_CSS = f"""
   border: 1px solid rgba(255,255,255,0.06);
 }}
 
-/* 5) Texto mais legível sobre fundo escuro */
 html, body, [data-testid="stAppViewContainer"] {{
   color: #e7eefb;
 }}
 </style>
 """
+
+
+
 
 # no começo do main()
 
