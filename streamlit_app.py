@@ -10,6 +10,8 @@ import plotly.express as px
 from io import BytesIO
 from zipfile import ZipFile, ZIP_DEFLATED
 from datetime import datetime
+import base64
+from pathlib import Path
 
 # -----------------------------------------------------------------------------
 # Config
@@ -159,8 +161,12 @@ html, body, [data-testid="stAppViewContainer"]{
 st.sidebar.markdown("### 🎨 Fundo")
 overlay = st.sidebar.slider("Opacidade do overlay (0=claro, 0.8=escuro)", 0.0, 0.8, 0.45, 0.05)
 
+
+path = Path("6209066.jpg")  # coloque sua imagem na pasta assets
+encoded = base64.b64encode(path.read_bytes()).decode()
+BG_URL_1 = f"data:image/jpeg;base64,{encoded}"
+
 # 1) URL principal (estático e confiável)
-BG_URL_1 = "https://unsplash.com/photos/aerial-top-view-containers-ship-cargo-business-commercial-trade-logistic-and-transportation-of-international-import-export-by-container-freight-cargo-ship-in-the-open-seaport-1Iutku2nQKg"
 
 
 # 2) Fallback (segundo URL caso o primeiro não carregue)
