@@ -1,5 +1,5 @@
 # app.py — Comércio Externo de Angola — 2022
-# v1.6.3 (fix: duplicação de colunas no câmbio + fallback XLSX)
+# v1.7.0 (background local dinâmico + melhorias)
 # Requisitos: streamlit>=1.31, pandas, altair, plotly
 
 import streamlit as st
@@ -10,8 +10,9 @@ import plotly.express as px
 from io import BytesIO
 from zipfile import ZipFile, ZIP_DEFLATED
 from datetime import datetime
-import base64
 from pathlib import Path
+import base64
+import mimetypes
 
 # -----------------------------------------------------------------------------
 # Config
@@ -37,7 +38,6 @@ def to_xlsx_or_zip(df_dict: dict[str, pd.DataFrame]) -> tuple[bytes, str, str]:
     Tenta gerar XLSX (openpyxl). Se não houver engine, gera ZIP com CSVs.
     Retorna: (bytes, filename, mime)
     """
-    # Tentativa XLSX (openpyxl)
     bio = BytesIO()
     try:
         with pd.ExcelWriter(bio, engine="openpyxl") as writer:
@@ -46,7 +46,6 @@ def to_xlsx_or_zip(df_dict: dict[str, pd.DataFrame]) -> tuple[bytes, str, str]:
         return bio.getvalue(), "comercio_externo.xlsx", \
                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     except Exception:
-        # Fallback ZIP com CSVs
         bio = BytesIO()
         with ZipFile(bio, "w", ZIP_DEFLATED) as zf:
             for name, df in df_dict.items():
@@ -125,16 +124,93 @@ def converter_moeda(df: pd.DataFrame, moeda: str, taxas: pd.DataFrame) -> pd.Dat
     return out
 
 # -----------------------------------------------------------------------------
-# CSS + Navbar
+# Background local (Base64) — lista de imagens e CSS dinâmico
+# -----------------------------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def list_local_images(assets_dir: Path) -> list[Path]:
+    exts = (".jpg", ".jpeg", ".png", ".webp")
+    if not assets_dir.exists():
+        return []
+    files = [p for p in assets_dir.iterdir() if p.suffix.lower() in exts and p.is_file()]
+    # ordena alfabeticamente
+    return sorted(files, key=lambda p: p.name.lower())
+
+@st.cache_data(show_spinner=False)
+def to_data_url(path: Path) -> str:
+    mime, _ = mimetypes.guess_type(path.name)
+    if mime is None:
+        # fallback pelo sufixo
+        if path.suffix.lower() in (".jpg", ".jpeg"):
+            mime = "image/jpeg"
+        elif path.suffix.lower() == ".png":
+            mime = "image/png"
+        elif path.suffix.lower() == ".webp":
+            mime = "image/webp"
+        else:
+            mime = "application/octet-stream"
+    b64 = base64.b64encode(path.read_bytes()).decode("utf-8")
+    return f"data:{mime};base64,{b64}"
+
+def build_background_css(bg_data_url: str, overlay_opacity: float, blur_px: int) -> str:
+    """
+    Constrói CSS sem f-string no corpo do CSS (usa placeholders e replace).
+    """
+    css_template = """
+<style>
+/* Tornar container transparente para a imagem aparecer */
+[data-testid="stAppViewContainer"] {
+  background: transparent !important;
+}
+[data-testid="stHeader"] {
+  background: transparent !important;
+}
+[data-testid="stSidebar"] {
+  background: rgba(10,16,28,0.70) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Imagem de fundo (local, base64) + overlay escuro + blur */
+.stApp::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(6,12,24,__OVERLAY__), rgba(6,12,24,__OVERLAY__)),
+    url("__BG__") center / cover no-repeat fixed;
+  filter: blur(__BLUR__px);
+  transform: scale(1.03);
+}
+
+/* Glass nos cartões para legibilidade */
+.block, .kpi-card, .navbar {
+  background: rgba(16,24,38,0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.06);
+}
+
+/* Texto */
+html, body, [data-testid="stAppViewContainer"] {
+  color: #e7eefb;
+}
+</style>
+""".strip()
+
+    css = css_template.replace("__BG__", bg_data_url)\
+                      .replace("__OVERLAY__", f"{overlay_opacity:.2f}")\
+                      .replace("__BLUR__", str(int(blur_px)))
+    return css
+
+# -----------------------------------------------------------------------------
+# CSS base (cores/componentes)
 # -----------------------------------------------------------------------------
 TEMPLATE_CSS = """
 <style>
 :root{ --primary:#0ea5e9; --bg:#0b1220; --card:#101826; --muted:#8aa1c1;
        --accent:#22c55e; --warn:#f59e0b; --danger:#ef4444; }
-html, body, [data-testid="stAppViewContainer"]{
-  background: linear-gradient(180deg, #0b1220 0%, #0b1220 60%, #0d1424 100%);
-  color: #e6edf6;
-}
 .navbar{ position: sticky; top: 0; z-index: 999; backdrop-filter: blur(6px);
   background: rgba(16, 24, 38, 0.72); border-bottom: 1px solid #172236;
   padding: 12px 18px; border-radius: 0 0 14px 14px; margin-bottom: 22px; }
@@ -155,105 +231,13 @@ html, body, [data-testid="stAppViewContainer"]{
 </style>
 """
 
-  # skyline Luanda (executivo)
-
-# --- CONTROLES RÁPIDOS NA SIDEBAR (opcional, mas útil) ---
-st.sidebar.markdown("### 🎨 Fundo")
-overlay = st.sidebar.slider("Opacidade do overlay (0=claro, 0.8=escuro)", 0.0, 0.8, 0.45, 0.05)
-
-
-path = Path("6209066.jpg")  # coloque sua imagem na pasta assets
-encoded = base64.b64encode(path.read_bytes()).decode()
-BG_URL_1 = f"data:image/jpeg;base64,{encoded}"
-
-# 1) URL principal (estático e confiável)
-
-
-# 2) Fallback (segundo URL caso o primeiro não carregue)
-BG_URL_2 = "https://images.unsplash.com/photo-1531297484001-80022131f5a1?q=80&w=1920&auto=format&fit=crop"
-
-# 3) Você pode colar um URL próprio aqui (opcional)
-bg_url_custom = st.sidebar.text_input("URL de imagem (opcional)", value="", placeholder="https://.../minha-imagem.jpg")
-BG_URL = bg_url_custom.strip() or BG_URL_1
-
-BACKGROUND_CSS = f"""
-<style>
-/* tornar contêiner transparente, para a imagem aparecer por trás */
-[data-testid="stAppViewContainer"] {{
-  background: transparent !important;
-}}
-[data-testid="stHeader"] {{
-  background: transparent !important;
-}}
-[data-testid="stSidebar"] {{
-  background: rgba(10, 16, 28, 0.70) !important;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-}}
-
-/* camada de fundo fixa usando ::before — com fallback */
-.stApp::before {{
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-
-  /* TENTATIVA 1: imagem principal + overlay */
-  background:
-    linear-gradient(rgba(6,12,24,{overlay}), rgba(6,12,24,{overlay})),
-    url('{BG_URL}') center / cover no-repeat fixed;
-
-  /* Se a 1ª imagem falhar, fica só o overlay por um instante,
-     mas abaixo temos uma segunda camada (via @supports) para fallback */
-  filter: blur(6px);
-  transform: scale(1.03);
-}}
-
-/* Fallback CSS para navegadores que suportam múltiplos backgrounds encadeados
-   de forma robusta. Forçamos uma segunda tentativa (BG_URL_2) por baixo.
-   OBS: quando a primeira carrega, esta camada quase não aparece. */
-@supports (background: paint(houdini)) {{
-  .stApp::before {{
-    background:
-      linear-gradient(rgba(6,12,24,{overlay}), rgba(6,12,24,{overlay})),
-      url('{BG_URL}'),
-      url('{BG_URL_2}');
-    background-position: center, center, center;
-    background-size: cover, cover, cover;
-    background-repeat: no-repeat, no-repeat, no-repeat;
-    background-attachment: fixed, fixed, fixed;
-  }}
-}}
-
-/* cartões com glassmorphism para legibilidade */
-.block, .kpi-card, .navbar {{
-  background: rgba(16, 24, 38, 0.78);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border: 1px solid rgba(255,255,255,0.06);
-}}
-
-html, body, [data-testid="stAppViewContainer"] {{
-  color: #e7eefb;
-}}
-</style>
-"""
-
-
-
-
-# no começo do main()
-
-
-
 NAVBAR_HTML = """
 <div class="navbar">
   <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
     <div class="brand">
       <span>📊 Comércio Externo de Angola</span>
       <span class="badge">Ano-base: 2022</span>
-      <span class="tag">AOA</span>
+      <span class="tag">v1.7.0</span>
     </div>
     <div class="links">
       <a href="#kpis">KPIs</a>
@@ -267,7 +251,6 @@ NAVBAR_HTML = """
 """
 
 def render_navbar():
-    import streamlit as st
     st.markdown(TEMPLATE_CSS, unsafe_allow_html=True)
     st.markdown(NAVBAR_HTML, unsafe_allow_html=True)
 
@@ -275,10 +258,41 @@ def render_navbar():
 # App
 # -----------------------------------------------------------------------------
 def main():
-    st.markdown(BACKGROUND_CSS, unsafe_allow_html=True)
+    # ====== Sidebar: Fundo local ======
+    st.sidebar.header("🎨 Fundo da aplicação (local)")
+    assets_dir = Path("assets")
+    files = list_local_images(assets_dir)
+
+    if not files:
+        st.sidebar.warning("Coloque imagens em ./assets (jpg, png, webp). Usando fundo padrão sem imagem.")
+        bg_data_url = "data:image/svg+xml;base64," + base64.b64encode(
+            """<svg xmlns='http://www.w3.org/2000/svg' width='1920' height='1080'>
+                 <defs><linearGradient id='g' x1='0' x2='0' y1='0' y2='1'>
+                   <stop offset='0%' stop-color='#0b1220'/><stop offset='100%' stop-color='#0d1424'/>
+                 </linearGradient></defs>
+                 <rect width='100%' height='100%' fill='url(#g)'/>
+               </svg>""".encode("utf-8")
+        ).decode("utf-8")
+    else:
+        names = [p.name for p in files]
+        choice = st.sidebar.selectbox("Escolha a imagem", names, index=0)
+        sel_path = next(p for p in files if p.name == choice)
+        try:
+            bg_data_url = to_data_url(sel_path)
+        except Exception as e:
+            st.sidebar.error(f"Falha ao ler {sel_path.name}: {e}")
+            bg_data_url = ""
+
+    overlay = st.sidebar.slider("Opacidade do overlay", 0.0, 0.8, 0.45, 0.05)
+    blur_px = st.sidebar.slider("Nível de blur (px)", 0, 20, 6, 1)
+
+    # Injetar CSS do background (sem f-strings no CSS)
+    st.markdown(build_background_css(bg_data_url, overlay, blur_px), unsafe_allow_html=True)
+
+    # Navbar (depois do CSS)
     render_navbar()
 
-    # Sidebar
+    # ====== Filtros principais ======
     st.sidebar.header("🔎 Filtros")
     perfil = st.sidebar.selectbox("Perfil de utilizador", ["Investidor","Gestor Público","Académico"], index=1)
     anos = st.sidebar.multiselect("Anos (comparação temporal)", [2020,2021,2022,2023,2024], default=[2022])
@@ -301,14 +315,13 @@ def main():
         except Exception as e:
             st.sidebar.error(f"Falha ao ler CSV: {e}")
 
-    # Dados
+    # ====== Dados ======
     df_flow, df_partners, df_products = load_sample_data(anos)
 
     # ===================== KPIs =====================
     st.markdown('<div id="kpis"></div>', unsafe_allow_html=True)
     st.subheader("Indicadores-Chave")
 
-    # Converter séries para a moeda selecionada (numa passada só)
     df_flow_conv = df_flow.copy()
     df_flow_conv = converter_moeda(df_flow_conv.assign(Valor=df_flow["Exportações"]), moeda, taxas) \
         .rename(columns={"Valor":"Exportações"})
@@ -320,8 +333,6 @@ def main():
     totals = (df_flow_conv.groupby("Ano")[["Exportações","Importações"]]
               .sum().reset_index())
     totals = dedup_cols(totals)
-
-    # agora é seguro fazer a subtração
     totals["Balança"] = totals["Exportações"] - totals["Importações"]
     totals["Cobertura_%"] = (totals["Exportações"] / totals["Importações"] * 100).round(1)
 
@@ -385,10 +396,10 @@ def main():
     st.markdown("### Principais parceiros comerciais")
     dfp = df_partners[df_partners["Ano"]==ano_focus].copy()
     if moeda != "AOA":
-        # conversão anual aproximada: média do ano
         tx_ano = taxas.loc[taxas["Ano"]==ano_focus, ["USD","EUR"]].mean()
         rate = tx_ano["USD"] if moeda=="USD" else tx_ano["EUR"]
         dfp["Exportações"] = (dfp["Exportações"]/rate).round(2)
+    # Importações
         dfp["Importações"] = (dfp["Importações"]/rate).round(2)
 
     c1, c2 = st.columns([1,1], gap="medium")
@@ -479,7 +490,7 @@ def main():
     # ===================== Footer =====================
     st.markdown(f"""
     <div class="footer">
-      <div>© {datetime.now().year} • Dashboard de Comércio Externo de Angola — <span class="badge">v1.6.3</span></div>
+      <div>© {datetime.now().year} • Dashboard de Comércio Externo de Angola — <span class="badge">v1.7.0</span></div>
       <div>Streamlit • Altair • Plotly</div>
     </div>
     """, unsafe_allow_html=True)
