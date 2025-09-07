@@ -317,4 +317,108 @@ def main():
 
     # ===================== Parceiros + Choropleth =====================
     st.markdown('<div id="parceiros"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="block">', unsafe_allow_html=True
+    st.markdown('<div class="block">', unsafe_allow_html=True)
+    st.markdown("### Principais parceiros comerciais")
+    dfp = df_partners[df_partners["Ano"]==ano_focus].copy()
+    if moeda != "AOA":
+        tx_ano = taxas.loc[taxas["Ano"]==ano_focus, ["USD","EUR"]].mean()
+        rate = tx_ano["USD"] if moeda=="USD" else tx_ano["EUR"]
+        dfp["Exportações"] = (dfp["Exportações"]/rate).round(2)
+        dfp["Importações"] = (dfp["Importações"]/rate).round(2)
+
+    c1, c2 = st.columns([1,1], gap="medium")
+    with c1:
+        st.altair_chart(
+            alt.Chart(dfp.sort_values("Exportações", ascending=False))
+               .mark_bar()
+               .encode(x=alt.X("Exportações:Q", title=f"Exportações ({moeda})"),
+                       y=alt.Y("Parceiro:N", sort="-x"),
+                       tooltip=["Parceiro","Exportações"])
+               .properties(height=280),
+            use_container_width=True
+        )
+    with c2:
+        st.altair_chart(
+            alt.Chart(dfp.sort_values("Importações", ascending=False))
+               .mark_bar()
+               .encode(x=alt.X("Importações:Q", title=f"Importações ({moeda})"),
+                       y=alt.Y("Parceiro:N", sort="-x"),
+                       tooltip=["Parceiro","Importações"])
+               .properties(height=280),
+            use_container_width=True
+        )
+
+    df_map = dfp.copy()
+    df_map["Fluxo"] = df_map["Exportações"] + df_map["Importações"]
+    df_map["Fluxo_log"] = np.log1p(df_map["Fluxo"])
+    st.plotly_chart(
+        px.choropleth(df_map, locations="ISO3", color="Fluxo_log",
+                      hover_name="Parceiro", color_continuous_scale="Blues",
+                      title=f"Fluxo Total ({moeda}) por Parceiro — {ano_focus}"),
+        use_container_width=True
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ===================== Produtos (HS) =====================
+    st.markdown('<div id="produtos"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="block">', unsafe_allow_html=True)
+    st.markdown("### Drill-down por HS-Code (Exportações)")
+    dfr = df_products[df_products["Ano"]==ano_focus].copy()
+    cap = st.selectbox("Capítulo HS", sorted(dfr["Capítulo HS"].unique()))
+    df_cap = dfr[dfr["Capítulo HS"]==cap].copy()
+    st.dataframe(df_cap[["Capítulo HS","Posição HS","Valor Exportado"]],
+                 use_container_width=True, hide_index=True)
+    st.altair_chart(
+        alt.Chart(df_cap.sort_values("Valor Exportado", ascending=False))
+           .mark_bar()
+           .encode(x=alt.X("Valor Exportado:Q", title=f"Valor Exportado ({moeda})"),
+                   y=alt.Y("Posição HS:N", sort="-x"),
+                   tooltip=["Posição HS","Valor Exportado"])
+           .properties(height=280),
+        use_container_width=True
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ===================== Exportação =====================
+    st.markdown('<div class="block">', unsafe_allow_html=True)
+    st.markdown("### Exportação de dados")
+    cexp1, cexp2 = st.columns(2)
+    with cexp1:
+        st.download_button(
+            "⬇️ Exportar Fluxos (CSV)",
+            data=dedup_cols(df_flow).to_csv(index=False).encode("utf-8"),
+            file_name=f"fluxos_{'-'.join(map(str,anos))}.csv",
+            mime="text/csv"
+        )
+    with cexp2:
+        payload, fname, mime = to_xlsx_or_zip({"Fluxos": df_flow, "Parceiros": df_partners, "Produtos": df_products})
+        st.download_button(f"⬇️ Exportar {'Tudo (XLSX)' if fname.endswith('.xlsx') else 'Tudo (ZIP/CSVs)'}",
+                           data=payload, file_name=fname, mime=mime)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ===================== Recomendações =====================
+    st.markdown('<div id="recomendacoes"></div>', unsafe_allow_html=True)
+    st.markdown('<div class="block">', unsafe_allow_html=True)
+    st.markdown("### Recomendações (roadmap)")
+    st.markdown("""
+- **Conexão a dados oficiais (INE/AGT)**: adicionar leitor `@st.cache_data` para CSV/XLSX oficiais e normalização (`Ano`, `Mês`, `Exportações`, `Importações`).
+- **Conversão cambial**: substituir `taxas_stub()` por série BNA; validar duplicados de `Ano,Mês` e recusar ficheiros com linhas duplicadas.
+- **HS-Code**: _join_ com tabela HS (capítulo/posição) até 6 dígitos para drill-down completo.
+- **Mapa**: escalar `Fluxo` com opção linear/log; tooltips com Exp/Imp.
+- **Alertas & metas**: persistir metas por perfil/ano (SQLite ou `st.session_state`).
+- **Exportação**: relatório HTML com gráficos (Altair/Plotly) e branding institucional.
+- **Perfis**: presets de metas/indicadores (Investidor → produtos; Gestor → cobertura; Académico → séries).
+    """)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ===================== Footer =====================
+    st.markdown(f"""
+    <div class="footer">
+      <div>© {datetime.now().year} • Dashboard de Comércio Externo de Angola — <span class="badge">v1.7.1</span></div>
+      <div>Streamlit • Altair • Plotly</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# -----------------------------------------------------------------------------
+if __name__ == "__main__":
+    main()
