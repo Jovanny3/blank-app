@@ -1,688 +1,732 @@
-# app.py — Comércio Externo de Angola — 2022
-# v1.8.0 (INE/AGT + BNA + HS6 + mapa linear/log + metas persistentes + relatório HTML)
-# Requisitos: streamlit>=1.31, pandas, altair, plotly, openpyxl
+# -*- coding: utf-8 -*-
+"""
+Comércio Externo de Angola — 2022
+v1.5 — Tabs + Website Mode + Prata + Recomendações + Correções de robustez
 
-import streamlit as st
-import pandas as pd
+• Modo claro prateado (cinza perolado) e Modo escuro executivo
+• Website Mode: hero, cards, grid de KPIs
+• Tabs de navegação: Visão Geral | Parceiros | Produtos | Regiões | Dados
+• Treemap para Top Produtos (toggle), PNG export (kaleido)
+• Anotações educativas em gráficos (pico/vale, 80/20, superávit/déficit)
+• Insights automáticos e Recomendações para leigos/gestores
+• Conversão AOA⇄USD (taxas por mês 2022; CSV opcional ou entrada manual)
+• Países → ISO3 (pycountry + exceções PT↔EN)
+• Cache seguro e widgets fora de funções cacheadas
+"""
+
+import os
+from typing import Dict, List, Tuple
+
 import numpy as np
-import altair as alt
+import pandas as pd
 import plotly.express as px
-import plotly.io as pio
-from io import BytesIO
-from zipfile import ZipFile, ZIP_DEFLATED
-from datetime import datetime
-import sqlite3
-from pathlib import Path
-import re
-import json
+import plotly.graph_objects as go
+import streamlit as st
+from unidecode import unidecode
+import pycountry
 
-# -----------------------------------------------------------------------------
-# Config
-# -----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Comércio Externo de Angola — 2022",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+# --------------------- CONFIGURAÇÃO BÁSICA ---------------------
+st.set_page_config(page_title="Comércio Externo de Angola — 2022", page_icon="🚢", layout="wide")
 
-MESES = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"]
-MES_MAP = {
-    "1":"Jan","01":"Jan","jan":"Jan","janeiro":"Jan","Janeiro":"Jan","Jan":"Jan",
-    "2":"Fev","02":"Fev","fev":"Fev","fevereiro":"Fev","Fevereiro":"Fev","Fev":"Fev",
-    "3":"Mar","03":"Mar","mar":"Mar","março":"Mar","Março":"Mar","Mar":"Mar",
-    "4":"Abr","04":"Abr","abr":"Abr","abril":"Abr","Abril":"Abr","Abr":"Abr",
-    "5":"Mai","05":"Mai","mai":"Mai","maio":"Mai","Maio":"Mai","Mai":"Mai",
-    "6":"Jun","06":"Jun","jun":"Jun","junho":"Jun","Junho":"Jun","Jun":"Jun",
-    "7":"Jul","07":"Jul","jul":"Jul","julho":"Jul","Julho":"Jul","Jul":"Jul",
-    "8":"Ago","08":"Ago","ago":"Ago","agosto":"Ago","Agosto":"Ago","Ago":"Ago",
-    "9":"Set","09":"Set","set":"Set","setembro":"Set","Setembro":"Set","Set":"Set",
-    "10":"Out","out":"Out","outubro":"Out","Outubro":"Out","Out":"Out",
-    "11":"Nov","nov":"Nov","novembro":"Nov","Novembro":"Nov","Nov":"Nov",
-    "12":"Dez","dez":"Dez","dezembro":"Dez","Dezembro":"Dez","Dez":"Dez",
-}
+# Paleta Light (prateado) e Dark (executiva)
+LIGHT = dict(RED="#d90429", BLACK="#111111", GOLD="#ffcc00",
+             GRAY="#eef1f5", BG="#e5e7eb", TEXT="#1f2937", SUB="#6b7280")
+DARK  = dict(RED="#ef233c", BLACK="#0d0f13", GOLD="#ffcc00",
+             GRAY="#1a1e24", BG="#0d0f13", TEXT="#f2f2f2", SUB="#c9c9c9")
 
-# -----------------------------------------------------------------------------
-# Utils
-# -----------------------------------------------------------------------------
-def dedup_cols(df: pd.DataFrame) -> pd.DataFrame:
-    return df.loc[:, ~df.columns.duplicated()]
+# --------------------- APARÊNCIA / WEBSITE MODE ----------------
+st.sidebar.header("🎨 Aparência")
+dark_mode = st.sidebar.toggle("Modo Escuro (beta)", value=False, help="Tema executivo escuro.")
+website_mode = st.sidebar.toggle("Website Mode (layout web)", value=True,
+                                 help="Seções com ‘hero’, cartões glass e grid de KPIs.")
+P = DARK if dark_mode else LIGHT
 
-def to_xlsx_or_zip(df_dict: dict[str, pd.DataFrame]) -> tuple[bytes, str, str]:
-    bio = BytesIO()
-    try:
-        with pd.ExcelWriter(bio, engine="openpyxl") as writer:
-            for name, df in df_dict.items():
-                dedup_cols(df).to_excel(writer, sheet_name=name[:31], index=False)
-        return bio.getvalue(), "comercio_externo.xlsx", \
-               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    except Exception:
-        bio = BytesIO()
-        with ZipFile(bio, "w", ZIP_DEFLATED) as zf:
-            for name, df in df_dict.items():
-                csv_bytes = dedup_cols(df).to_csv(index=False).encode("utf-8")
-                zf.writestr(f"{name}.csv", csv_bytes)
-        return bio.getvalue(), "comercio_externo_csvs.zip", "application/zip"
-
-def to_pretty_number(v):
-    try:
-        return f"{v:,.0f}".replace(",", " ")
-    except Exception:
-        return str(v)
-
-# --------- Persistência SQLite (metas por perfil/ano) ----------
-DB_PATH = "state.db"
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS metas (
-            perfil TEXT NOT NULL,
-            ano INTEGER NOT NULL,
-            meta_cob REAL NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (perfil, ano)
-        )
-    """)
-    conn.commit()
-    conn.close()
-
-def get_meta(perfil: str, ano: int, default_val: float = 120.0) -> float:
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        cur.execute("SELECT meta_cob FROM metas WHERE perfil=? AND ano=?", (perfil, ano))
-        row = cur.fetchone()
-        conn.close()
-        if row is None:
-            return default_val
-        return float(row[0])
-    except Exception:
-        # fallback: session_state
-        key = f"meta_{perfil}_{ano}"
-        return st.session_state.get(key, default_val)
-
-def set_meta(perfil: str, ano: int, val: float):
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO metas (perfil, ano, meta_cob, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(perfil, ano) DO UPDATE SET meta_cob=excluded.meta_cob, updated_at=excluded.updated_at
-        """, (perfil, ano, float(val), datetime.utcnow().isoformat()))
-        conn.commit()
-        conn.close()
-    except Exception:
-        key = f"meta_{perfil}_{ano}"
-        st.session_state[key] = float(val)
-
-# --------- Normalizadores / Validadores ----------
-def _normalize_mes(x) -> str:
-    s = str(x).strip()
-    return MES_MAP.get(s, MES_MAP.get(s.lower(), s))
-
-def _ensure_columns(df: pd.DataFrame, cols: list[str], name: str):
-    missing = [c for c in cols if c not in df.columns]
-    if missing:
-        st.error(f"{name}: faltam colunas {missing}")
-        st.stop()
-
-def _assert_no_duplicates(df: pd.DataFrame, keys: list[str], name: str):
-    dups = df.duplicated(subset=keys, keep=False)
-    if dups.any():
-        st.error(f"{name}: ficheiro contém linhas duplicadas por {keys}. Remova duplicados e reenvie.")
-        st.stop()
-
-# -----------------------------------------------------------------------------
-# Leitores oficiais (INE/AGT, BNA, HS)
-# -----------------------------------------------------------------------------
-@st.cache_data(show_spinner=False)
-def read_official_flows(uploaded_file) -> pd.DataFrame:
-    """
-    Espera colunas (case-insensitive) com semântica: Ano, Mes/Mês, Exportações, Importações
-    Aceita CSV ou XLSX.
-    """
-    if uploaded_file is None:
-        return pd.DataFrame()
-    try:
-        if uploaded_file.name.lower().endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
-    except Exception as e:
-        st.error(f"Falha a ler ficheiro INE/AGT: {e}")
-        st.stop()
-
-    # normalizar nomes
-    rename_map = {}
-    cols_low = {c.lower(): c for c in df.columns}
-    # mapeamento flexível
-    for target, candidates in {
-        "Ano": ["ano", "year"],
-        "Mês": ["mês","mes","month"],
-        "Exportações": ["exportações","exportacoes","exports","exp"],
-        "Importações": ["importações","importacoes","imports","imp"],
-    }.items():
-        found = None
-        for c in candidates:
-            if c in cols_low:
-                found = cols_low[c]
-                break
-        if found:
-            rename_map[found] = target
-    df = df.rename(columns=rename_map)
-    _ensure_columns(df, ["Ano","Mês","Exportações","Importações"], "INE/AGT")
-
-    # limpeza de tipos
-    df["Ano"] = pd.to_numeric(df["Ano"], errors="coerce").astype("Int64")
-    df["Mês"] = df["Mês"].apply(_normalize_mes)
-    df["Exportações"] = pd.to_numeric(df["Exportações"], errors="coerce").fillna(0.0)
-    df["Importações"] = pd.to_numeric(df["Importações"], errors="coerce").fillna(0.0)
-
-    # validar duplicados por (Ano, Mês)
-    _assert_no_duplicates(df, ["Ano","Mês"], "INE/AGT")
-
-    # ordenar meses pela ordem definida
-    df["M_idx"] = pd.Categorical(df["Mês"], categories=MESES, ordered=True)
-    df = df.sort_values(["Ano","M_idx"]).drop(columns=["M_idx"]).reset_index(drop=True)
-    return df
-
-@st.cache_data(show_spinner=False)
-def read_bna_rates(uploaded_file) -> pd.DataFrame:
-    """
-    Espera colunas: Ano, Mês, USD, EUR
-    Recusa duplicados por (Ano,Mês).
-    """
-    if uploaded_file is None:
-        return pd.DataFrame()
-    try:
-        if uploaded_file.name.lower().endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
-    except Exception as e:
-        st.error(f"Falha a ler ficheiro BNA: {e}")
-        st.stop()
-
-    rename = {}
-    cols_low = {c.lower(): c for c in df.columns}
-    for target, candidates in {
-        "Ano": ["ano","year"],
-        "Mês": ["mês","mes","month"],
-        "USD": ["usd","taxa_usd","aoa_usd","cambio_usd"],
-        "EUR": ["eur","taxa_eur","aoa_eur","cambio_eur"],
-    }.items():
-        for c in candidates:
-            if c in cols_low:
-                rename[cols_low[c]] = target
-                break
-    df = df.rename(columns=rename)
-    _ensure_columns(df, ["Ano","Mês","USD","EUR"], "BNA")
-
-    df["Ano"] = pd.to_numeric(df["Ano"], errors="coerce").astype("Int64")
-    df["Mês"] = df["Mês"].apply(_normalize_mes)
-    df["USD"] = pd.to_numeric(df["USD"], errors="coerce")
-    df["EUR"] = pd.to_numeric(df["EUR"], errors="coerce")
-
-    _assert_no_duplicates(df, ["Ano","Mês"], "BNA")
-
-    df["M_idx"] = pd.Categorical(df["Mês"], categories=MESES, ordered=True)
-    df = df.sort_values(["Ano","M_idx"]).drop(columns=["M_idx"]).reset_index(drop=True)
-    return df
-
-@st.cache_data(show_spinner=False)
-def read_hs_table(uploaded_file) -> pd.DataFrame:
-    """
-    Espera colunas: HS6 (ou CodigoHS), Capitulo (ou Capítulo), Posicao (ou Posição), Descricao
-    Aceita variações; HS6 deve ser 6 dígitos (string).
-    """
-    if uploaded_file is None:
-        return pd.DataFrame()
-    try:
-        if uploaded_file.name.lower().endswith(".csv"):
-            df = pd.read_csv(uploaded_file, dtype=str)
-        else:
-            df = pd.read_excel(uploaded_file, dtype=str)
-    except Exception as e:
-        st.error(f"Falha a ler tabela HS: {e}")
-        st.stop()
-
-    rename = {}
-    cols_low = {c.lower(): c for c in df.columns}
-    mapping = {
-        "HS6": ["hs6","codigo_hs","codigohs","hs_6","hs"],
-        "Capítulo HS": ["capitulo","capítulo","capitulo hs","capítulo hs","capitulo_hs","capítulo_hs","chapter"],
-        "Posição HS": ["posicao","posição","posicao hs","posição hs","posicao_hs","posição_hs","position"],
-        "Descrição": ["descricao","descrição","description","desc"]
-    }
-    for target, candidates in mapping.items():
-        for c in candidates:
-            if c in cols_low:
-                rename[cols_low[c]] = target
-                break
-    df = df.rename(columns=rename)
-    # se não tiver Capítulo/Posição, pelo menos HS6 e Descrição
-    _ensure_columns(df, ["HS6"], "Tabela HS")
-    if "Descrição" not in df.columns:
-        df["Descrição"] = ""
-
-    # normalizar HS6: manter 6 dígitos
-    df["HS6"] = df["HS6"].astype(str).str.extract(r"(\d{6})", expand=False)
-    df = df.dropna(subset=["HS6"]).drop_duplicates(subset=["HS6"]).reset_index(drop=True)
-    return df
-
-# -----------------------------------------------------------------------------
-# Conversão cambial
-# -----------------------------------------------------------------------------
-def converter_moeda(df: pd.DataFrame, moeda: str, taxas: pd.DataFrame) -> pd.DataFrame:
-    if moeda == "AOA" or taxas.empty:
-        return df.copy()
-    out = df.copy()
-    cols_convert = [c for c in ["Exportações","Importações","Valor","Valor Exportado"] if c in out.columns]
-    tx = taxas[["Ano","Mês",moeda]].copy()
-    out = out.merge(tx, on=["Ano","Mês"], how="left")
-    rate = out[moeda].replace({0: np.nan})
-    for c in cols_convert:
-        out[c] = (out[c] / rate).round(2)
-    out.drop(columns=[moeda], inplace=True)
-    return dedup_cols(out)
-
-# -----------------------------------------------------------------------------
-# Background (gradiente sólido) + Navbar
-# -----------------------------------------------------------------------------
-def build_gradient_css(color_a: str, color_b: str, angle_deg: int, blur_px: int) -> str:
-    css = f"""
-    <style>
-    [data-testid="stAppViewContainer"] {{
-      background: transparent !important;
-    }}
-    [data-testid="stHeader"] {{
-      background: transparent !important;
-    }}
-    [data-testid="stSidebar"] {{
-      background: rgba(10,16,28,0.70) !important;
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-    }}
-    .stApp::before {{
-      content: "";
-      position: fixed;
-      inset: 0;
-      z-index: -1;
-      pointer-events: none;
-      background: linear-gradient({angle_deg}deg, {color_a}, {color_b});
-      filter: blur({blur_px}px);
-      transform: scale(1.02);
-    }}
-    .block, .kpi-card, .navbar {{
-      background: rgba(16,24,38,0.78);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      border: 1px solid rgba(255,255,255,0.06);
-    }}
-    html, body, [data-testid="stAppViewContainer"] {{
-      color: #e7eefb;
-    }}
-    </style>
-    """
-    return css
-
-TEMPLATE_CSS = """
+CUSTOM_CSS = f"""
 <style>
-:root{ --primary:#0ea5e9; --card:#101826; --muted:#8aa1c1;
-       --accent:#22c55e; --warn:#f59e0b; --danger:#ef4444; }
-.navbar{ position: sticky; top: 0; z-index: 999; backdrop-filter: blur(6px);
-  background: rgba(16, 24, 38, 0.72); border-bottom: 1px solid #172236;
-  padding: 12px 18px; border-radius: 0 0 14px 14px; margin-bottom: 22px; }
-.navbar .brand{ display:flex; align-items:center; gap:12px; font-weight:700; letter-spacing:.3px; }
-.navbar .tag{ font-size:12px; padding:3px 8px; border-radius:999px; background:rgba(14,165,233,.12); color:var(--primary); border:1px solid rgba(14,165,233,.35); }
-.navbar .links{ display:flex; gap:14px; flex-wrap:wrap; }
-.navbar a{ color:#cfe3ff; text-decoration:none; font-size:14px; opacity:.9; }
-.navbar a:hover{ opacity:1; text-decoration:underline; }
-.kpis{ display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:16px; margin:6px 0 18px 0; }
-.kpi-card{ background:var(--card); border:1px solid #192336; border-radius:14px; padding:16px; box-shadow:0 4px 18px rgba(2,6,23,0.36); }
-.kpi-title{ font-size:12px; color:var(--muted); margin-bottom:6px; text-transform:uppercase; letter-spacing:.6px; }
-.kpi-value{ font-size:26px; font-weight:800; line-height:1.2; margin-bottom:6px; }
-.kpi-delta{ font-size:13px; font-weight:600; }
-.kpi-delta.up{ color:var(--accent); } .kpi-delta.down{ color:var(--danger); }
-.block{ background:var(--card); border:1px solid #182335; border-radius:14px; padding:16px 16px 8px 16px; margin-bottom:16px; }
-.footer{ margin-top:26px; padding:16px; border-top:1px solid #172236; color:#9db4d8; font-size:13px; text-align:center; }
-.badge{ display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid #2a3b57; color:#b9d1ff; background:rgba(59,130,246,.08); }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+
+:root {{
+  --angola-red: {P['RED']};
+  --angola-black: {P['BLACK']};
+  --angola-gold: {P['GOLD']};
+  --angola-gray: {P['GRAY']};
+  --bg: {P['BG']};
+  --text: {P['TEXT']};
+  --sub: {P['SUB']};
+}}
+
+html, body, [data-testid="stAppViewContainer"] {{
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+}}
+
+.block-container {{ max-width: 1200px; padding-top: .6rem; }}
+
+.app-hero {{
+  border-radius: 20px;
+  padding: 24px 28px;
+  color: white;
+  background:
+     radial-gradient(1000px 200px at 10% -20%, rgba(255,204,0,0.15), transparent),
+     radial-gradient(1000px 200px at 90% -20%, rgba(217,4,41,0.18), transparent),
+     linear-gradient(90deg, var(--angola-red), var(--angola-black) 80%);
+  box-shadow: 0 12px 30px rgba(0,0,0,.18);
+  display:flex; align-items:center; gap:16px;
+}}
+.app-hero h1 {{ margin:0; font-size: 1.6rem; letter-spacing:.2px; }}
+.app-hero .sub {{ opacity:.9; margin-top: 4px; font-size:.95rem; }}
+
+.section .title {{ font-size: 1.08rem; font-weight: 800; color: var(--text); margin: 12px 0 8px; }}
+
+.kpi-grid {{ display:grid; grid-template-columns: repeat(6, 1fr); gap:12px; }}
+@media (max-width: 1200px) {{ .kpi-grid {{ grid-template-columns: repeat(3, 1fr); }} }}
+@media (max-width: 768px)  {{ .kpi-grid {{ grid-template-columns: repeat(2, 1fr); }} }}
+
+.kpi-card {{
+  padding: 14px 16px; border-radius: 16px;
+  background: {("#11161d" if dark_mode else "rgba(255,255,255,.35)")};
+  backdrop-filter: blur(6px);
+  border: 1px solid {("rgba(255,255,255,.08)" if dark_mode else "rgba(255,255,255,.55)")};
+  box-shadow: 0 8px 24px rgba(0,0,0,.10);
+}}
+.kpi-title {{ font-size: .9rem; color: var(--sub); margin-bottom: .25rem; }}
+.kpi-value {{ font-size: clamp(1rem, 2.3vw, 1.7rem); font-weight: 800; color: var(--text); line-height:1.1; }}
+
+.card {{
+  padding: 14px; border-radius: 16px;
+  background: {("#12161d" if dark_mode else "rgba(255,255,255,.55)")};
+  backdrop-filter: blur(6px);
+  border: 1px solid {("rgba(255,255,255,.09)" if dark_mode else "rgba(255,255,255,.65)")};
+  box-shadow: 0 8px 24px rgba(0,0,0,.08);
+}}
+
+.badge {{
+  display:inline-block; padding: 4px 8px; border-radius: 999px;
+  background: rgba(0,0,0,.08); color: var(--text); font-size:.78rem; margin-left:6px;
+}}
 </style>
 """
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-NAVBAR_HTML = """
-<div class="navbar">
-  <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;">
-    <div class="brand">
-      <span>📊 Comércio Externo de Angola</span>
-      <span class="badge">Ano-base: 2022</span>
-      <span class="tag">v1.8.0</span>
-    </div>
-    <div class="links">
-      <a href="#kpis">KPIs</a>
-      <a href="#fluxos-mensais">Fluxos mensais</a>
-      <a href="#parceiros">Parceiros</a>
-      <a href="#produtos">Produtos</a>
-      <a href="#recomendacoes">Recomendações</a>
-    </div>
-  </div>
-</div>
-"""
+# --------------------- MAPEAMENTO / EXCEÇÕES -------------------
+MAPEAMENTO_COLUNAS = {
+    "year":"year","month":"month","flow":"flow","partner_country":"partner_country",
+    "product_desc":"product_desc","value_aoa":"value_aoa",
+    "hs_code":"hs_code","hs_section":"hs_section","weight_kg":"weight_kg",
+}
 
-def render_navbar():
-    st.markdown(TEMPLATE_CSS, unsafe_allow_html=True)
-    st.markdown(NAVBAR_HTML, unsafe_allow_html=True)
+EXCECOES_ISO3: Dict[str, str] = {
+    "republica democratica do congo":"COD","rd congo":"COD","congo (rdc)":"COD","rep.dem. do congo":"COD","rdc":"COD",
+    "congo-brazzaville":"COG","republica do congo":"COG","congo (brazzaville)":"COG","congo":"COG",
+    "sao tome e principe":"STP","sao tome":"STP",
+    "cabo verde":"CPV","guine-bissau":"GNB","mocambique":"MOZ",
+    "republica da africa do sul":"ZAF","africa do sul":"ZAF","rsa":"ZAF",
+    "essuatini":"SWZ","eswatini":"SWZ","zimbabue":"ZWE","zambia":"ZMB","namibia":"NAM","botsuana":"BWA","lesoto":"LSO",
+    "tanzania":"TZA","malaui":"MWI","angola":"AGO",
+    "reino unido":"GBR","uk":"GBR","gra-bretanha":"GBR","gra-bretanha (uk)":"GBR",
+    "republica checa":"CZE","tchequia":"CZE","eslovaquia":"SVK","eslovenia":"SVN",
+    "alemanha":"DEU","franca":"FRA","italia":"ITA","espanha":"ESP","portugal":"PRT",
+    "holanda":"NLD","paises baixos":"NLD","grecia":"GRC","polonia":"POL","hungria":"HUN","romenia":"ROU","bulgaria":"BGR",
+    "suecia":"SWE","finlandia":"FIN","dinamarca":"DNK","irlanda":"IRL","austria":"AUT",
+    "estonia":"EST","letonia":"LVA","lituania":"LTU","croacia":"HRV","luxemburgo":"LUX","belgica":"BEL",
+    "estados unidos":"USA","eua":"USA","u.s.a.":"USA","united states":"USA",
+    "brasil":"BRA","coreia do sul":"KOR","republica da coreia":"KOR","russia":"RUS","federacao russa":"RUS",
+    "hong kong":"HKG","macau":"MAC","timor-leste":"TLS","timor leste":"TLS",
+    "vietname":"VNM","vietna":"VNM","emirados arabes unidos":"ARE","eau":"ARE","emirados":"ARE",
+    "arabia saudita":"SAU","qatar":"QAT","oman":"OMN","kuwait":"KWT",
+    "japao":"JPN","china":"CHN","india":"IND","singapura":"SGP","malasia":"MYS","tailandia":"THA","indonesia":"IDN",
+    "turquia":"TUR","turkiye":"TUR","argelia":"DZA","marrocos":"MAR","tunisia":"TUN","egito":"EGY",
+    "nigeria":"NGA","ghana":"GHA","costa do marfim":"CIV","cote d’ivoire":"CIV","cote d'ivoire":"CIV",
+    "reino unido (uk)":"GBR",
+}
 
-# -----------------------------------------------------------------------------
-# App
-# -----------------------------------------------------------------------------
+SADC = {"AGO","ZAF","BWA","COD","COG","LBR","LSO","MDG","MWI","MUS","MOZ","NAM","SYC","SWZ","TZA","ZMB","ZWE","COM","STP"}
+UE27 = {"AUT","BEL","BGR","HRV","CYP","CZE","DNK","EST","FIN","FRA","DEU","GRC","HUN","IRL","ITA","LVA","LTU","LUX","MLT","NLD","POL","PRT","ROU","SVK","SVN","ESP","SWE"}
+ASIA = {"AFG","ARM","AZE","BHR","BGD","BRN","BTN","KHM","CHN","CYP","GEO","HKG","IND","IDN","IRN","IRQ","ISR","JPN","JOR","KAZ","KWT","KGZ","LAO","LBN","MAC","MYS","MDV","MNG","MMR","NPL","PRK","OMN","PAK","PSE","PHL","QAT","SAU","SGP","KOR","LKA","SYR","TWN","TJK","THA","TUR","TKM","ARE","UZB","VNM","YEM"}
+
+# --------------------- HELPERS ---------------------
+def _slug(text: str) -> str:
+    return unidecode(str(text).strip().lower())
+
+def _to_month_name(m: int) -> str:
+    nomes = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"]
+    return nomes[int(m)-1] if 1 <= int(m) <= 12 else str(m)
+
+def _fmt_compact(v: float) -> str:
+    try: n = float(v)
+    except Exception: return "—"
+    for div, suf in [(1e12,"T"), (1e9,"B"), (1e6,"M"), (1e3,"K")]:
+        if abs(n) >= div:
+            return f"{n/div:.2f}{suf}"
+    return f"{n:,.0f}"
+
+def _y_prefix(moeda: str) -> str:
+    return "$ " if moeda == "USD" else "kz "
+
+def _download_png_button(fig: go.Figure, filename: str, key: str):
+    try:
+        png_bytes = fig.to_image(format="png", engine="kaleido", scale=2)
+        st.download_button("⬇️ Baixar PNG", data=png_bytes, file_name=filename, mime="image/png", key=key)
+    except Exception:
+        st.info("Para baixar PNG, verifique se **kaleido** está instalado.")
+
+# --------------------- DADOS (DEMO / CSV) ---------------------
+@st.cache_data(show_spinner=False)
+def gerar_dados_sinteticos(seed: int = 7) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    meses = np.arange(1, 13, dtype=int)
+    parceiros = ["China","Índia","Portugal","África do Sul","Espanha","França","Holanda","Itália","Alemanha","Emirados Árabes Unidos","Singapura","Japão","Brasil","Namíbia","Zâmbia","Congo (RDC)","Congo-Brazzaville","EUA","Reino Unido"]
+    produtos = ["Petróleo bruto","Gás natural","Diamantes","Derivados de petróleo","Bebidas","Cimentos","Madeira serrada","Peixes congelados","Café","Açúcar"]
+    rows = []
+    for month in meses:
+        saz = (1 + 0.1*np.sin(2*np.pi*(month/12.0)))
+        for partner in parceiros:
+            for prod in produtos:
+                base_exp = 1.8e12 if prod in {"Petróleo bruto", "Gás natural", "Diamantes"} else 1.2e10
+                base_imp = 8e11 if prod in {"Derivados de petróleo", "Cimentos", "Máquinas"} else 1e10
+                v_exp = max(0, rng.normal(loc=base_exp, scale=0.2*base_exp)) * saz
+                v_imp = max(0, rng.normal(loc=base_imp, scale=0.25*base_imp)) * (2 - saz)
+                rows.append([2022, month, "Exportações", partner, prod, float(v_exp)])
+                rows.append([2022, month, "Importações", partner, prod, float(v_imp)])
+    return pd.DataFrame(rows, columns=["year","month","flow","partner_country","product_desc","value_aoa"])
+
+@st.cache_data(show_spinner=False)
+def carregar_dados(uploaded_file, demo: bool) -> pd.DataFrame:
+    if demo or uploaded_file is None:
+        df = gerar_dados_sinteticos()
+    else:
+        df = pd.read_csv(uploaded_file)
+    rename_map = {v: k for k, v in MAPEAMENTO_COLUNAS.items() if v in df.columns}
+    df = df.rename(columns=rename_map)
+    colunas_essenciais = ["year","month","flow","partner_country","product_desc","value_aoa"]
+    faltantes = [c for c in colunas_essenciais if c not in df.columns]
+    if faltantes:
+        st.error(f"CSV inválido: faltam colunas essenciais: {', '.join(faltantes)}"); st.stop()
+    df["year"] = pd.to_numeric(df["year"], errors="coerce").astype("Int64")
+    df["month"] = pd.to_numeric(df["month"], errors="coerce").astype("Int64")
+    df["value_aoa"] = pd.to_numeric(df["value_aoa"], errors="coerce").fillna(0.0)
+    df["flow"] = df["flow"].astype(str)
+    df["partner_country"] = df["partner_country"].astype(str)
+    df["product_desc"] = df["product_desc"].fillna("Desconhecido").astype(str)
+    if not (df["year"] == 2022).any():
+        st.error("O dataset não contém linhas do ano **2022**."); st.stop()
+    if (df["year"] != 2022).any():
+        st.warning("Foram encontradas linhas fora de 2022; apenas 2022 será considerado.")
+        df = df[df["year"] == 2022]
+    df = df[(df["month"] >= 1) & (df["month"] <= 12)].copy()
+    df["month_name"] = df["month"].apply(_to_month_name)
+    return df
+
+def _pycountry_to_iso3(name: str) -> str:
+    try:
+        return pycountry.countries.lookup(name).alpha_3
+    except Exception:
+        try:
+            return pycountry.countries.search_fuzzy(name)[0].alpha_3
+        except Exception:
+            return ""
+
+@st.cache_data(show_spinner=False)
+def normalizar_paises(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["partner_country_clean"] = df["partner_country"].fillna("").astype(str)
+    iso_codes = []
+    for raw in df["partner_country_clean"]:
+        key = _slug(raw)
+        if key in EXCECOES_ISO3:
+            iso_codes.append(EXCECOES_ISO3[key]); continue
+        iso = _pycountry_to_iso3(unidecode(raw))
+        iso_codes.append(iso if iso else None)
+    df["iso3"] = iso_codes
+    return df
+
+@st.cache_data(show_spinner=False)
+def ler_taxas_csv(uploaded_rates) -> Dict[int, float]:
+    taxas = {}
+    if uploaded_rates is not None:
+        try:
+            dfr = pd.read_csv(uploaded_rates)
+            dfr["month"] = pd.to_numeric(dfr["month"], errors="coerce").astype("Int64")
+            dfr["rate"] = pd.to_numeric(dfr["rate"], errors="coerce")
+            dfr = dfr[(dfr["month"] >= 1) & (dfr["month"] <= 12) & dfr["rate"].notna()]
+            taxas = dict(zip(dfr["month"].astype(int), dfr["rate"].astype(float)))
+        except Exception:
+            pass
+    return taxas
+
+def obter_taxas(taxas_lidas: Dict[int, float]) -> Tuple[Dict[int, float], float, bool]:
+    """ Widgets de taxa fora do cache """
+    taxas = dict(taxas_lidas) if taxas_lidas else {}
+    st.sidebar.markdown("### 💱 Taxas de câmbio AOA→USD (2022)")
+    cols = st.sidebar.columns(3)
+    for m in range(1, 13):
+        c = cols[(m-1) % 3]
+        with c:
+            default = float(taxas.get(m, 0.0))
+            val = st.number_input(f"M{m:02d}", min_value=0.0, value=default, step=0.1, format="%.4f", key=f"rate_{m:02d}")
+        if val > 0:
+            taxas[m] = float(val)
+    valid = [v for v in taxas.values() if v and v > 0]
+    taxa_media = float(np.mean(valid)) if valid else 0.0
+    completo = all(m in taxas and taxas[m] > 0 for m in range(1, 13))
+    return taxas, taxa_media, completo
+
+# --------------------- AGREGAÇÕES ---------------------
+@st.cache_data(show_spinner=False)
+def precompute_aggs(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    monthly_flow = df.groupby(["month","flow"], as_index=False)["value"].sum().sort_values(["month","flow"])
+    by_partner   = df.groupby(["partner_country_clean","iso3","flow"], as_index=False)["value"].sum()
+    by_product   = df.groupby(["product_desc","flow"], as_index=False)["value"].sum()
+    tmp = df.copy()
+    tmp["regiao"] = tmp["iso3"].apply(lambda x: "SADC" if x in SADC else ("UE" if x in UE27 else ("Ásia" if x in ASIA else "Outros")))
+    by_region    = tmp.groupby(["regiao","flow"], as_index=False)["value"].sum()
+    monthly_region = tmp.groupby(["month","regiao"], as_index=False)["value"].sum()
+    return {"monthly_flow": monthly_flow, "by_partner": by_partner, "by_product": by_product,
+            "by_region": by_region, "monthly_region": monthly_region}
+
+# --------------------- GRÁFICOS ---------------------
+def _hover_val(moeda):
+    return f"<b>%{{y:,.0f}}</b> {moeda}<br><span style='font-size:0.9em;color:#888'>Passe o rato para comparar meses.</span>"
+
+def plot_series(monthly_flow: pd.DataFrame, moeda: str) -> go.Figure:
+    pvt = monthly_flow.pivot(index="month", columns="flow", values="value").fillna(0.0).reindex(range(1,13), fill_value=0.0)
+    for col in ["Exportações","Importações"]:
+        if col not in pvt.columns:
+            pvt[col] = 0.0
+    pvt["month_name"] = [_to_month_name(m) for m in pvt.index]
+    long = pvt.reset_index().melt(id_vars=["month","month_name"], value_vars=["Exportações","Importações"], var_name="Fluxo", value_name="Valor")
+    fig = px.line(long, x="month_name", y="Valor", color="Fluxo", markers=True,
+                  labels={"Valor": f"Valor ({moeda})", "month_name":"Mês"},
+                  color_discrete_map={"Exportações": P["RED"], "Importações": P["GOLD"]})
+    fig.update_traces(hovertemplate=_hover_val(moeda))
+    tot = long.groupby("month_name")["Valor"].sum()
+    if len(tot) > 0:
+        mx, mn = tot.idxmax(), tot.idxmin()
+        fig.add_annotation(x=mx, y=tot[mx], text="Pico", showarrow=True, arrowcolor=P["GOLD"])
+        fig.add_annotation(x=mn, y=tot[mn], text="Vale", showarrow=True, arrowcolor=P["RED"])
+    fig.update_layout(legend_title=None, margin=dict(l=10,r=10,t=10,b=10),
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    fig.update_yaxes(tickprefix=_y_prefix(moeda))
+    return fig
+
+def plot_balanca_mensal(monthly_flow: pd.DataFrame, moeda: str) -> go.Figure:
+    pvt = monthly_flow.pivot(index="month", columns="flow", values="value").fillna(0.0).reindex(range(1,13), fill_value=0.0)
+    exp = pvt.get("Exportações", pd.Series(0.0, index=pvt.index))
+    imp = pvt.get("Importações", pd.Series(0.0, index=pvt.index))
+    bal = exp - imp
+    df = pd.DataFrame({"Mês":[_to_month_name(m) for m in pvt.index],
+                       "Exportações":exp.values, "Importações":imp.values, "Balança":bal.values})
+    fig = go.Figure()
+    fig.add_bar(name="Exportações", x=df["Mês"], y=df["Exportações"], marker_color=P["RED"], opacity=0.9, hovertemplate=_hover_val(moeda))
+    fig.add_bar(name="Importações", x=df["Mês"], y=df["Importações"], marker_color=P["GOLD"], opacity=0.9, hovertemplate=_hover_val(moeda))
+    fig.add_trace(go.Scatter(name="Balança (linha)", x=df["Mês"], y=df["Balança"], mode="lines+markers",
+                             line=dict(width=3, color=P["TEXT"]), hovertemplate=_hover_val(moeda)))
+    saldo_total = df["Balança"].sum()
+    txt = "Superávit no ano" if saldo_total >= 0 else "Déficit no ano"
+    fig.add_annotation(x=df["Mês"].iloc[-1], y=df["Balança"].iloc[-1], text=txt, showarrow=True, arrowcolor=P["TEXT"])
+    fig.update_layout(barmode="group", legend_title=None, margin=dict(l=10,r=10,t=10,b=10),
+                      yaxis_title=f"Valor ({moeda})", plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    fig.update_yaxes(tickprefix=_y_prefix(moeda))
+    return fig
+
+def plot_top_parceiros(by_partner: pd.DataFrame, top_n: int, fluxo: str, moeda: str) -> go.Figure:
+    df = by_partner[by_partner["flow"] == fluxo].groupby(["partner_country_clean","iso3"], as_index=False)["value"].sum()
+    df = df.sort_values("value", ascending=False).head(top_n)
+    fig = px.bar(df, x="value", y="partner_country_clean", orientation="h",
+                 labels={"value": f"Valor ({moeda})", "partner_country_clean":"Parceiro"},
+                 hover_data={"iso3": True, "partner_country_clean": True, "value": ":,.0f"},
+                 color_discrete_sequence=[P["RED"]])
+    fig.update_traces(hovertemplate="<b>%{y}</b><br>Valor: %{x:,.0f} "+moeda)
+    fig.update_layout(yaxis={"categoryorder":"total ascending"}, margin=dict(l=10,r=10,t=10,b=10),
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    fig.update_xaxes(tickprefix=_y_prefix(moeda))
+    return fig
+
+def plot_top_produtos_bar(by_product: pd.DataFrame, top_n: int, fluxo: str, moeda: str) -> go.Figure:
+    df = by_product[by_product["flow"] == fluxo].groupby(["product_desc"], as_index=False)["value"].sum().sort_values("value", ascending=False).head(top_n)
+    fig = px.bar(df, x="value", y="product_desc", orientation="h",
+                 labels={"value": f"Valor ({moeda})", "product_desc":"Produto"},
+                 hover_data={"product_desc": True, "value": ":,.0f"},
+                 color_discrete_sequence=[P["GOLD"]])
+    fig.update_traces(hovertemplate="<b>%{y}</b><br>Valor: %{x:,.0f} "+moeda)
+    fig.update_layout(yaxis={"categoryorder":"total ascending"}, margin=dict(l=10,r=10,t=10,b=10),
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    fig.update_xaxes(tickprefix=_y_prefix(moeda))
+    return fig
+
+def plot_top_produtos_treemap(by_product: pd.DataFrame, top_n: int, fluxo: str, moeda: str) -> go.Figure:
+    df = by_product[by_product["flow"] == fluxo].groupby(["product_desc"], as_index=False)["value"].sum().sort_values("value", ascending=False).head(top_n)
+    fig = px.treemap(df, path=["product_desc"], values="value",
+                     hover_data={"value":":,.0f"},
+                     color="value",
+                     color_continuous_scale=[[0, P["GRAY"]],[0.5, P["GOLD"]],[1, P["RED"]]])
+    fig.update_traces(hovertemplate="<b>%{label}</b><br>Valor: %{value:,.0f} "+moeda)
+    fig.update_layout(margin=dict(l=10,r=10,t=10,b=10), coloraxis_showscale=False,
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+def plot_mapa(by_partner: pd.DataFrame, fluxo: str, moeda: str) -> go.Figure:
+    df = by_partner[by_partner["flow"] == fluxo].groupby(["iso3"], as_index=False)["value"].sum()
+    df = df[df["iso3"].notna() & (df["iso3"] != "")]
+    fig = px.choropleth(df, locations="iso3", color="value",
+                        color_continuous_scale=[[0, P["GRAY"]],[0.5, P["GOLD"]],[1, P["RED"]]],
+                        labels={"value": f"Valor ({moeda})"}, hover_data={"iso3": True, "value": ":,.0f"},
+                        projection="natural earth")
+    fig.update_layout(margin=dict(l=10,r=10,t=10,b=10),
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+def plot_participacao(df_base: pd.DataFrame, top_n: int, por: str, fluxo: str, moeda: str) -> go.Figure:
+    if por == "partner":
+        g = df_base[df_base["flow"] == fluxo].groupby("partner_country_clean", as_index=False)["value"].sum()
+        label, ycol, color = "Parceiro", "partner_country_clean", P["RED"]
+    else:
+        g = df_base[df_base["flow"] == fluxo].groupby("product_desc", as_index=False)["value"].sum()
+        label, ycol, color = "Produto", "product_desc", P["GOLD"]
+    total = g["value"].sum()
+    g["pct"] = 100.0 * g["value"] / total if total else 0.0
+    g = g.sort_values("pct", ascending=False).head(top_n)
+    fig = px.bar(g, x="pct", y=ycol, orientation="h",
+                 labels={"pct":"Participação (%)", ycol:label},
+                 hover_data={ycol:True, "pct":":.2f", "value":":,.0f"},
+                 color_discrete_sequence=[color])
+    fig.update_traces(hovertemplate="<b>%{y}</b><br>Participação: %{x:.2f}%")
+    fig.update_layout(yaxis={"categoryorder":"total ascending"}, margin=dict(l=10,r=10,t=10,b=10),
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+def plot_regioes(by_region: pd.DataFrame, moeda: str) -> go.Figure:
+    df = by_region.pivot(index="regiao", columns="flow", values="value").fillna(0.0).reset_index()
+    for col in ["Exportações","Importações"]:
+        if col not in df.columns: df[col] = 0.0
+    fig = px.bar(df, x="regiao", y=["Exportações","Importações"], barmode="group",
+                 labels={"value": f"Valor ({moeda})", "regiao":"Região/Bloco", "variable":"Fluxo"},
+                 color_discrete_map={"Exportações": P["RED"], "Importações": P["GOLD"]})
+    fig.update_layout(margin=dict(l=10,r=10,t=10,b=10), legend_title=None,
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    fig.update_yaxes(tickprefix=_y_prefix(moeda))
+    return fig
+
+def plot_area_regioes(monthly_region: pd.DataFrame, moeda: str) -> go.Figure:
+    g = monthly_region.copy()
+    g["Mês"] = g["month"].apply(_to_month_name)
+    fig = px.area(g, x="Mês", y="value", color="regiao",
+                  labels={"value": f"Valor ({moeda})", "regiao":"Região/Bloco"})
+    fig.update_traces(hovertemplate="<b>%{fullData.name}</b><br>Mês: %{x}<br>Valor: %{y:,.0f} " + moeda)
+    fig.update_layout(margin=dict(l=10,r=10,t=10,b=10), legend_title=None,
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    fig.update_yaxes(tickprefix=_y_prefix(moeda))
+    return fig
+
+def plot_pareto_parceiros(by_partner: pd.DataFrame, fluxo: str) -> go.Figure:
+    df = by_partner[by_partner["flow"] == fluxo].groupby("partner_country_clean", as_index=False)["value"].sum().sort_values("value", ascending=False)
+    fig = go.Figure()
+    if df.empty:
+        return fig
+    df["cum_pct"] = 100 * df["value"].cumsum() / df["value"].sum()
+    fig.add_bar(x=df["partner_country_clean"], y=df["value"], name="Valor", marker_color=P["RED"], hovertemplate="<b>%{x}</b><br>Valor: %{y:,.0f}")
+    fig.add_trace(go.Scatter(x=df["partner_country_clean"], y=df["cum_pct"], name="Acumulado (%)", yaxis="y2",
+                             mode="lines+markers", line=dict(color=P["TEXT"]), hovertemplate="Acumulado: %{y:.1f}%"))
+    close80 = (df["cum_pct"] - 80).abs().idxmin()
+    fig.add_annotation(x=df["partner_country_clean"].iloc[close80], y=df["cum_pct"].iloc[close80], text="≈80%", showarrow=True, arrowcolor=P["TEXT"])
+    fig.update_layout(yaxis=dict(title="Valor"), yaxis2=dict(title="Acumulado (%)", overlaying="y", side="right", range=[0,100]),
+                      margin=dict(l=10,r=10,t=10,b=10), legend_title=None,
+                      plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+    return fig
+
+# --------------------- KPIs / INSIGHTS / RECOMENDAÇÕES ---------------------
+def gerar_kpis(df_filtered: pd.DataFrame, moeda: str, meses_sel: List[int]) -> None:
+    prefix = _y_prefix(moeda)
+    st.markdown('<div class="section"><div class="title">📌 Indicadores-Chave</div></div>', unsafe_allow_html=True)
+
+    def fmt(n): return prefix + _fmt_compact(n)
+
+    exp_total = df_filtered.loc[df_filtered["flow"]=="Exportações","value"].sum()
+    imp_total = df_filtered.loc[df_filtered["flow"]=="Importações","value"].sum()
+    balanca   = exp_total - imp_total
+    cobertura = (exp_total/imp_total) if imp_total else float("nan")
+    n_parceiros = df_filtered["partner_country_clean"].nunique()
+
+    mes_ref = max(meses_sel) if meses_sel else int(df_filtered["month"].max()) if not df_filtered.empty else 1
+    cur = df_filtered[df_filtered["month"] == mes_ref]["value"].sum() if not df_filtered.empty else float("nan")
+    prev = df_filtered[df_filtered["month"] == (mes_ref-1)]["value"].sum() if mes_ref>1 else float("nan")
+    var_mm = (cur/prev - 1.0)*100.0 if (prev and prev>0) else float("nan")
+
+    st.markdown('<div class="kpi-grid">', unsafe_allow_html=True)
+    st.markdown(f'<div class="kpi-card"><div class="kpi-title">🚢 Exportações</div><div class="kpi-value">{fmt(exp_total)}</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="kpi-card"><div class="kpi-title">📦 Importações</div><div class="kpi-value">{fmt(imp_total)}</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="kpi-card" title="Balança = Exportações − Importações."><div class="kpi-title">⚖️ Balança</div><div class="kpi-value">{fmt(balanca)}</div></div>', unsafe_allow_html=True)
+    cob_text = f"{cobertura*100:.1f}%" if cobertura==cobertura else "—"
+    st.markdown(f'<div class="kpi-card" title="Cobertura = Exportações / Importações."><div class="kpi-title">🛡️ Cobertura</div><div class="kpi-value">{cob_text}</div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="kpi-card"><div class="kpi-title">🌍 N.º de parceiros</div><div class="kpi-value">{int(n_parceiros)}</div></div>', unsafe_allow_html=True)
+    var_text = f"{var_mm:.1f}%" if var_mm==var_mm else "—"
+    st.markdown(f'<div class="kpi-card" title="Variação m/m do comércio total no último mês do filtro."><div class="kpi-title">↕️ Variação m/m</div><div class="kpi-value">{var_text}</div></div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+def gerar_insights(df: pd.DataFrame, fluxo_ref: str) -> List[str]:
+    insights = []
+    if df.empty: return ["Sem valores no filtro atual."]
+    total = df["value"].sum()
+    if total <= 0:
+        return ["Sem valores no filtro atual."]
+    top_partner = df.groupby("partner_country_clean")["value"].sum().sort_values(ascending=False).head(1)
+    if not top_partner.empty:
+        nome = top_partner.index[0]; val = top_partner.iloc[0]; pct = 100*val/total
+        insights.append(f"**{nome}** é o principal parceiro no período filtrado, com **{pct:.1f}%** do total.")
+    top_prod = df.groupby("product_desc")["value"].sum().sort_values(ascending=False).head(1)
+    if not top_prod.empty:
+        nome = top_prod.index[0]; val = top_prod.iloc[0]; pct = 100*val/total
+        insights.append(f"O produto de maior peso é **{nome}**, com **{pct:.1f}%** do total.")
+    by_m = df.groupby("month")["value"].sum().reindex(range(1,13)).fillna(0)
+    if by_m.max() > 0:
+        best_m = int(by_m.idxmax()); worst_m = int(by_m.idxmin())
+        insights.append(f"O mês com **maior atividade** foi **{_to_month_name(best_m)}**, e o **menor** foi **{_to_month_name(worst_m)}**.")
+    exp = df[df["flow"]=="Exportações"]["value"].sum()
+    imp = df[df["flow"]=="Importações"]["value"].sum()
+    bal = exp - imp
+    if bal >= 0: insights.append("A **balança comercial está superavitária** no período filtrado (exportações > importações).")
+    else:        insights.append("A **balança comercial está deficitária** no período filtrado (importações > exportações).")
+    share = df.groupby("partner_country_clean")["value"].sum().sort_values(ascending=False).cumsum() / total * 100
+    n80 = (share <= 80).sum()
+    if n80 >= 1:
+        insights.append(f"**{n80} parceiros** respondem por cerca de **80%** do valor total — atenção à concentração.")
+    return insights
+
+def gerar_recomendacoes(df: pd.DataFrame) -> List[str]:
+    recs = []
+    if df.empty: return ["Sem dados para recomendações."]
+    exp = df[df["flow"]=="Exportações"]["value"].sum()
+    imp = df[df["flow"]=="Importações"]["value"].sum()
+    if exp > imp:
+        recs.append("**Diversificar a pauta exportadora** além de petróleo/gás para reduzir risco de preço.")
+    else:
+        recs.append("**Substituição competitiva de importações** em bens essenciais (máquinas/derivados) com políticas de incentivo.")
+    top_partner = df.groupby("partner_country_clean")["value"].sum().sort_values(ascending=False).head(1)
+    if not top_partner.empty:
+        nome = top_partner.index[0]
+        recs.append(f"**Gestão de risco com {nome}**: negociar contratos, seguro de crédito e monitorar logística.")
+    # Exemplo de leitura regional
+    if (df["iso3"].isin(SADC)).any():
+        recs.append("**Aprofundar integração SADC** (regras de origem, facilitação aduaneira) para reduzir custos.")
+    return recs
+
+# --------------------- APP ---------------------
 def main():
-    # === Visual ===
-    st.sidebar.header("🎨 Fundo (gradiente sólido)")
-    color_a = st.sidebar.color_picker("Cor A", "#0b1220")
-    color_b = st.sidebar.color_picker("Cor B", "#0d1424")
-    angle   = st.sidebar.slider("Ângulo (°)", 0, 360, 135, 5)
-    blur    = st.sidebar.slider("Blur do fundo (px)", 0, 20, 6, 1)
-    st.markdown(build_gradient_css(color_a, color_b, angle, blur), unsafe_allow_html=True)
-    render_navbar()
+    # HERO / Cabeçalho
+    if website_mode:
+        c1, c2 = st.columns([1,6])
+        with c1:
+            if os.path.exists("insignia_angola.png"):
+                st.image("insignia_angola.png", use_column_width=False)
+        with c2:
+            st.markdown('<div class="app-hero"><div><h1>Comércio Externo de Angola — 2022</h1><div class="sub">Análise mensal do INE com conversão AOA⇄USD e visual executivo.</div></div></div>', unsafe_allow_html=True)
+    else:
+        st.title("Comércio Externo de Angola — 2022")
+        st.caption("Fonte: INE (Angola), 2022.")
 
-    # === Uploads oficiais ===
-    st.sidebar.header("📥 Dados oficiais")
-    up_ine = st.sidebar.file_uploader("INE/AGT (CSV/XLSX) — Fluxos", type=["csv","xlsx"])
-    up_bna = st.sidebar.file_uploader("BNA (CSV/XLSX) — Taxas USD/EUR", type=["csv","xlsx"])
-    up_hs  = st.sidebar.file_uploader("Tabela HS (CSV/XLSX) — HS6/Descrição", type=["csv","xlsx"])
+    # ---------------- Sidebar: arquivos e opções ----------------
+    st.sidebar.header("⚙️ Dados e opções")
+    demo_mode = st.sidebar.toggle("Modo Demo (dados sintéticos)", value=True)
+    uploaded_file = st.sidebar.file_uploader("CSV principal (2022)", type=["csv"])
+    uploaded_rates = st.sidebar.file_uploader("CSV de taxas AOA→USD (opcional)", type=["csv"])
 
-    # === Perfis, anos, moeda ===
+    # Moeda
+    moeda = st.sidebar.radio("Moeda", options=["AOA","USD"], horizontal=True)
+
+    # Ler dados
+    df_raw = carregar_dados(uploaded_file, demo=demo_mode)
+    df_norm = normalizar_paises(df_raw)
+
+    # Taxas
+    taxas_lidas = ler_taxas_csv(uploaded_rates)
+    taxas, taxa_media, completo_rates = obter_taxas(taxas_lidas)
+
+    # Conversão
+    df_val = df_norm.copy()
+    if moeda == "AOA":
+        df_val["value"] = df_val["value_aoa"]
+        msg_taxa = "Moeda: AOA (valores originais)."
+        badge = ""
+    else:
+        def _rate_for_month(m):
+            r = taxas.get(int(m), 0.0)
+            return r if r and r > 0 else taxa_media
+        df_val["applied_rate"] = df_val["month"].apply(_rate_for_month)
+        df_val["value"] = df_val["value_aoa"] / df_val["applied_rate"].replace(0, np.nan)
+        msg_taxa = "Moeda: USD — usa taxa mensal quando disponível; meses sem taxa usam **média**."
+        badge = "" if completo_rates else '<span class="badge">Taxa média aplicada em meses faltantes</span>'
+    st.caption(msg_taxa + (" " + badge if badge else ""))
+
+    # ---------------- Filtros ----------------
     st.sidebar.header("🔎 Filtros")
-    perfil = st.sidebar.selectbox("Perfil", ["Investidor","Gestor Público","Académico"], index=1)
-    anos_default = [2022]
-    anos = st.sidebar.multiselect("Anos", [2020,2021,2022,2023,2024], default=anos_default)
-    if not anos:
-        st.stop()
-    moeda = st.sidebar.selectbox("Moeda", ["AOA","USD","EUR"], index=0)
-    escala_mapa = st.sidebar.radio("Escala do mapa", ["Linear","Log"], index=1, horizontal=True)
+    meses = sorted(df_val["month"].dropna().astype(int).unique().tolist())
+    parceiros = sorted(df_val["partner_country_clean"].unique().tolist())
+    produtos = sorted(df_val["product_desc"].unique().tolist())
+    fluxos = ["Exportações","Importações"]
 
-    # === Ler bases ===
-    df_flow = read_official_flows(up_ine) if up_ine is not None else pd.DataFrame()
-    if df_flow.empty:
-        # fallback de exemplo (apenas para demo)
-        @st.cache_data(show_spinner=False)
-        def _demo():
-            flows = []
-            np.random.seed(11)
-            for ano in [2020,2021,2022,2023,2024]:
-                base_exp = 11000 + (ano-2020)*900
-                base_imp =  7000 + (ano-2020)*500
-                exp = (np.array([base_exp, base_exp-400, base_exp+1500, base_exp+1800, base_exp+2100, base_exp+1900,
-                                 base_exp+2300, base_exp+2600, base_exp+2400, base_exp+2800, base_exp+3000, base_exp+3300])
-                       * (1 + np.random.normal(0, 0.02, 12))).astype(int)
-                imp = (np.array([base_imp, base_imp+200, base_imp-100, base_imp+400, base_imp+600, base_imp+500,
-                                 base_imp+800, base_imp+1100, base_imp+900, base_imp+1200, base_imp+1400, base_imp+1600])
-                       * (1 + np.random.normal(0, 0.02, 12))).astype(int)
-                flows.append(pd.DataFrame({"Ano": ano, "Mês": MESES, "Exportações": exp, "Importações": imp}))
-            return pd.concat(flows, ignore_index=True)
-        df_flow = _demo()
+    if "meses_sel" not in st.session_state: st.session_state["meses_sel"] = meses
+    if "parceiros_sel" not in st.session_state: st.session_state["parceiros_sel"] = []
+    if "produtos_sel" not in st.session_state: st.session_state["produtos_sel"] = []
+    if "fluxo_sel" not in st.session_state: st.session_state["fluxo_sel"] = "Todos"
+    if "topn" not in st.session_state: st.session_state["topn"] = 10
+    if "tipo_prod_viz" not in st.session_state: st.session_state["tipo_prod_viz"] = "Barras"
 
-    df_bna = read_bna_rates(up_bna) if up_bna is not None else pd.DataFrame()
-    df_hs  = read_hs_table(up_hs)   if up_hs  is not None else pd.DataFrame()
+    col_reset, col_topn = st.sidebar.columns([1,1])
+    with col_reset:
+        if st.button("🔄 Resetar filtros"):
+            st.session_state["meses_sel"] = meses
+            st.session_state["parceiros_sel"] = []
+            st.session_state["produtos_sel"] = []
+            st.session_state["fluxo_sel"] = "Todos"
+            st.session_state["topn"] = 10
+            st.session_state["tipo_prod_viz"] = "Barras"
 
-    # filtrar anos
-    df_flow = df_flow[df_flow["Ano"].isin(anos)].copy()
+    st.session_state["meses_sel"] = st.sidebar.multiselect("Mês", options=meses, default=st.session_state["meses_sel"], format_func=lambda m: f"{m:02d} - {_to_month_name(m)}")
+    st.session_state["parceiros_sel"] = st.sidebar.multiselect("Parceiros", options=parceiros, default=st.session_state["parceiros_sel"])
+    st.session_state["produtos_sel"] = st.sidebar.multiselect("Produtos", options=produtos, default=st.session_state["produtos_sel"])
+    st.session_state["fluxo_sel"] = st.sidebar.selectbox("Fluxo", options=["Todos"] + fluxos, index=0)
+    vmin, vmax = float(df_val["value"].min()), float(df_val["value"].max())
+    faixa = st.sidebar.slider("Faixa de valor", min_value=0.0, max_value=max(1.0, vmax), value=(0.0, vmax))
+    with col_topn:
+        st.session_state["topn"] = st.selectbox("Top N", options=[5,10,20], index=1)
 
-    # Conversão cambial
-    df_flow_conv = df_flow.copy()
-    df_bna_use = df_bna[df_bna["Ano"].isin(anos)].copy() if not df_bna.empty else df_bna
-    df_flow_conv = converter_moeda(df_flow_conv.assign(Valor=df_flow["Exportações"]), moeda, df_bna_use) \
-        .rename(columns={"Valor":"Exportações"})
-    tmp_imp = converter_moeda(df_flow.assign(Valor=df_flow["Importações"]), moeda, df_bna_use) \
-        .rename(columns={"Valor":"Importações"})
-    df_flow_conv["Importações"] = tmp_imp["Importações"].values
-    df_flow_conv = dedup_cols(df_flow_conv)
+    st.sidebar.markdown("**Top Produtos**")
+    st.session_state["tipo_prod_viz"] = st.sidebar.radio("Tipo", ["Barras","Treemap"], horizontal=True, key="tipo_prod_viz_radio")
 
-    # ===================== KPIs =====================
-    st.markdown('<div id="kpis"></div>', unsafe_allow_html=True)
-    st.subheader("Indicadores-Chave")
+    # Aplicar filtros
+    df_f = df_val[df_val["month"].isin(st.session_state["meses_sel"])].copy()
+    if st.session_state["parceiros_sel"]:
+        df_f = df_f[df_f["partner_country_clean"].isin(st.session_state["parceiros_sel"])]
+    if st.session_state["produtos_sel"]:
+        df_f = df_f[df_f["product_desc"].isin(st.session_state["produtos_sel"])]
+    if st.session_state["fluxo_sel"] in fluxos:
+        df_f = df_f[df_f["flow"] == st.session_state["fluxo_sel"]]
+    df_f = df_f[(df_f["value"] >= faixa[0]) & (df_f["value"] <= faixa[1])]
+    aggs = precompute_aggs(df_f)
 
-    totals = (df_flow_conv.groupby("Ano")[["Exportações","Importações"]]
-              .sum().reset_index())
-    totals["Balança"] = totals["Exportações"] - totals["Importações"]
-    totals["Cobertura_%"] = (totals["Exportações"] / totals["Importações"] * 100).round(1)
+    # ---------------- Tabs ----------------
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Visão Geral", "🤝 Parceiros", "📦 Produtos", "🧭 Regiões", "📋 Dados"])
 
-    c1,c2,c3,c4 = st.columns(4, gap="medium")
-    ano_focus = anos[0] if len(anos)==1 else max(anos)
-    row = totals.loc[totals["Ano"]==ano_focus].iloc[0]
+    # ----- Visão Geral -----
+    with tab1:
+        # KPIs
+        gerar_kpis(df_f, moeda, st.session_state["meses_sel"])
 
-    with c1:
-        st.markdown(f'<div class="kpi-card"><div class="kpi-title">Exportações ({ano_focus})</div>'
-                    f'<div class="kpi-value">{to_pretty_number(row["Exportações"])} {moeda}</div>'
-                    '<div class="kpi-delta up">▲</div></div>', unsafe_allow_html=True)
-    with c2:
-        st.markdown(f'<div class="kpi-card"><div class="kpi-title">Importações ({ano_focus})</div>'
-                    f'<div class="kpi-value">{to_pretty_number(row["Importações"])} {moeda}</div>'
-                    '<div class="kpi-delta down">▼</div></div>', unsafe_allow_html=True)
-    with c3:
-        arrow = "▲" if row["Balança"]>=0 else "▼"
-        cls = "up" if row["Balança"]>=0 else "down"
-        st.markdown(f'<div class="kpi-card"><div class="kpi-title">Balança Comercial</div>'
-                    f'<div class="kpi-value">{to_pretty_number(row["Balança"])} {moeda}</div>'
-                    f'<div class="kpi-delta {cls}">{arrow}</div></div>', unsafe_allow_html=True)
-    with c4:
-        st.markdown(f'<div class="kpi-card"><div class="kpi-title">Taxa de Cobertura</div>'
-                    f'<div class="kpi-value">{row["Cobertura_%"]:,.1f}%</div>'
-                    '<div class="kpi-delta up">▲ exp/imp</div></div>', unsafe_allow_html=True)
+        # Série temporal
+        st.markdown('<div class="section"><div class="title">📈 Série temporal (2022)</div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        fig_series = plot_series(aggs["monthly_flow"], moeda)
+        st.plotly_chart(fig_series, use_container_width=True)
+        _download_png_button(fig_series, f"serie_temporal_{moeda}.png", key="dl_series")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    # ===================== Metas (persistência) =====================
-    init_db()
-    st.markdown('<div class="block">', unsafe_allow_html=True)
-    default_meta = 120.0 if perfil=="Gestor Público" else 110.0
-    meta_cob_loaded = get_meta(perfil, ano_focus, default_meta)
-    meta_cob = st.slider("Meta de Taxa de Cobertura (%)", 80, 200, int(meta_cob_loaded), step=5)
-    if st.button("💾 Guardar meta para este perfil/ano"):
-        set_meta(perfil, ano_focus, float(meta_cob))
-        st.success("Meta guardada.")
-    if row["Cobertura_%"] >= meta_cob:
-        st.success(f"Cobertura {row['Cobertura_%']:.1f}% ≥ meta {meta_cob}%.")
-    else:
-        st.warning(f"Cobertura {row['Cobertura_%']:.1f}% < meta {meta_cob}% — atenção.")
-    st.markdown('</div>', unsafe_allow_html=True)
+        # Balança
+        st.markdown('<div class="section"><div class="title">📉 Balança mensal (colunas + linha)</div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        fig_bal = plot_balanca_mensal(aggs["monthly_flow"], moeda)
+        st.plotly_chart(fig_bal, use_container_width=True)
+        _download_png_button(fig_bal, f"balanca_mensal_{moeda}.png", key="dl_bal")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    # ===================== Fluxos mensais =====================
-    st.markdown('<div id="fluxos-mensais"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="block">', unsafe_allow_html=True)
-    st.markdown("### Fluxos mensais — Exportações vs Importações")
-    df_plot = df_flow_conv.melt(["Ano","Mês"], var_name="Tipo", value_name="Valor")
-    chart = (
-        alt.Chart(df_plot)
-        .mark_line(point=True)
-        .encode(
-            x=alt.X("Mês:N", sort=MESES),
-            y=alt.Y("Valor:Q", title=f"Valor ({moeda})"),
-            color="Tipo:N",
-            tooltip=["Ano","Mês","Tipo","Valor"]
-        )
-        .properties(height=360)
-        .facet(column="Ano:N")
-        .resolve_scale(y='independent')
-    )
-    st.altair_chart(chart, use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+        # Insights + Recomendações
+        colA, colB = st.columns(2)
+        with colA:
+            st.markdown('<div class="section"><div class="title">💡 Insights automáticos</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            for i in gerar_insights(df_f, st.session_state["fluxo_sel"] if st.session_state["fluxo_sel"] in {"Exportações","Importações"} else "Exportações"):
+                st.markdown(f"- {i}")
+            st.markdown('</div>', unsafe_allow_html=True)
+        with colB:
+            st.markdown('<div class="section"><div class="title">📝 Recomendações</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            for r in gerar_recomendacoes(df_f):
+                st.markdown(f"- {r}")
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    # ===================== Parceiros + Mapa =====================
-    st.markdown('<div id="parceiros"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="block">', unsafe_allow_html=True)
-    st.markdown("### Parceiros comerciais (exemplo)")
-    # Obs.: Se tiveres uma base oficial por país, podes fazer upload e substituir esta secção.
-    partners_demo = pd.DataFrame({
-        "Ano": [ano_focus]*6,
-        "Parceiro": ["China","European Union","United States","India","United Arab Emirates","South Africa"],
-        "ISO3": ["CHN","EUU","USA","IND","ARE","ZAF"],
-        "Exportações": [42000, 28000, 16000, 14000,  9000, 7000],
-        "Importações": [18000, 22000,  9000,  7000,  6000, 5000],
-    })
-    dfp = partners_demo.copy()
+    # ----- Parceiros -----
+    with tab2:
+        fluxo_ref = st.session_state["fluxo_sel"] if st.session_state["fluxo_sel"] in {"Exportações","Importações"} else "Exportações"
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown('<div class="section"><div class="title">🌍 Top Parceiros</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            fig_top_parc = plot_top_parceiros(aggs["by_partner"], st.session_state["topn"], fluxo_ref, moeda)
+            st.plotly_chart(fig_top_parc, use_container_width=True)
+            _download_png_button(fig_top_parc, f"top_parceiros_{fluxo_ref}_{moeda}.png", key="dl_parc")
+            st.markdown('</div>', unsafe_allow_html=True)
+        with col2:
+            st.markdown('<div class="section"><div class="title">📊 Pareto de Parceiros (acumulado %)</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            fig_pareto = plot_pareto_parceiros(aggs["by_partner"], fluxo_ref)
+            st.plotly_chart(fig_pareto, use_container_width=True)
+            _download_png_button(fig_pareto, f"pareto_{fluxo_ref}.png", key="dl_pareto")
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    if not df_bna_use.empty and moeda != "AOA":
-        tx_ano = df_bna_use.loc[df_bna_use["Ano"]==ano_focus, ["USD","EUR"]].mean()
-        rate = tx_ano["USD"] if moeda=="USD" else tx_ano["EUR"]
-        dfp["Exportações"] = (dfp["Exportações"]/rate).round(2)
-        dfp["Importações"] = (dfp["Importações"]/rate).round(2)
+        st.markdown('<div class="section"><div class="title">🗺️ Mapa mundial (por parceiro)</div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        fig_map = plot_mapa(aggs["by_partner"], fluxo_ref, moeda)
+        st.plotly_chart(fig_map, use_container_width=True)
+        _download_png_button(fig_map, f"mapa_{fluxo_ref}_{moeda}.png", key="dl_map")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    c1, c2 = st.columns([1,1], gap="medium")
-    with c1:
-        st.altair_chart(
-            alt.Chart(dfp.sort_values("Exportações", ascending=False))
-               .mark_bar()
-               .encode(x=alt.X("Exportações:Q", title=f"Exportações ({moeda})"),
-                       y=alt.Y("Parceiro:N", sort="-x"),
-                       tooltip=["Parceiro","Exportações"])
-               .properties(height=280),
-            use_container_width=True
-        )
-    with c2:
-        st.altair_chart(
-            alt.Chart(dfp.sort_values("Importações", ascending=False))
-               .mark_bar()
-               .encode(x=alt.X("Importações:Q", title=f"Importações ({moeda})"),
-                       y=alt.Y("Parceiro:N", sort="-x"),
-                       tooltip=["Parceiro","Importações"])
-               .properties(height=280),
-            use_container_width=True
-        )
+    # ----- Produtos -----
+    with tab3:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown('<div class="section"><div class="title">🧩 Top Produtos</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            if st.session_state["tipo_prod_viz"] == "Treemap":
+                fig_top_prod = plot_top_produtos_treemap(aggs["by_product"], st.session_state["topn"], fluxo_ref, moeda)
+                st.plotly_chart(fig_top_prod, use_container_width=True)
+                _download_png_button(fig_top_prod, f"top_produtos_treemap_{fluxo_ref}_{moeda}.png", key="dl_prod_tm")
+            else:
+                fig_top_prod = plot_top_produtos_bar(aggs["by_product"], st.session_state["topn"], fluxo_ref, moeda)
+                st.plotly_chart(fig_top_prod, use_container_width=True)
+                _download_png_button(fig_top_prod, f"top_produtos_{fluxo_ref}_{moeda}.png", key="dl_prod")
+            st.markdown('</div>', unsafe_allow_html=True)
+        with col2:
+            st.markdown('<div class="section"><div class="title">% Participação por Produto</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            fig_pr = plot_participacao(df_f, st.session_state["topn"], "product", fluxo_ref, moeda)
+            st.plotly_chart(fig_pr, use_container_width=True)
+            _download_png_button(fig_pr, f"participacao_produtos_{fluxo_ref}_{moeda}.png", key="dl_pr")
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    df_map = dfp.copy()
-    df_map["Fluxo"] = df_map["Exportações"] + df_map["Importações"]
-    if escala_mapa == "Log":
-        df_map["ValorMapa"] = np.log1p(df_map["Fluxo"])
-        color_title = f"log(1+Fluxo) ({moeda})"
-    else:
-        df_map["ValorMapa"] = df_map["Fluxo"]
-        color_title = f"Fluxo ({moeda})"
+    # ----- Regiões -----
+    with tab4:
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown('<div class="section"><div class="title">🧭 Regiões/Blocos</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            fig_reg = plot_regioes(aggs["by_region"], moeda)
+            st.plotly_chart(fig_reg, use_container_width=True)
+            _download_png_button(fig_reg, f"regioes_{moeda}.png", key="dl_reg")
+            st.markdown('</div>', unsafe_allow_html=True)
+        with col2:
+            st.markdown('<div class="section"><div class="title">🌐 Séries por Regiões (área empilhada)</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            fig_area = plot_area_regioes(aggs["monthly_region"], moeda)
+            st.plotly_chart(fig_area, use_container_width=True)
+            _download_png_button(fig_area, f"series_regioes_{moeda}.png", key="dl_area")
+            st.markdown('</div>', unsafe_allow_html=True)
 
-    fig_map = px.choropleth(
-        df_map, locations="ISO3", color="ValorMapa",
-        hover_name="Parceiro",
-        hover_data={
-            "ISO3": False,
-            "Exportações": True,
-            "Importações": True,
-            "Fluxo": True,
-            "ValorMapa": False
-        },
-        color_continuous_scale="Blues",
-        title=f"Fluxo Total por Parceiro — {ano_focus}"
-    )
-    fig_map.update_coloraxes(colorbar_title=color_title)
-    st.plotly_chart(fig_map, use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+    # ----- Dados -----
+    with tab5:
+        st.markdown('<div class="section"><div class="title">📋 Dados filtrados</div></div>', unsafe_allow_html=True)
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        termo = st.text_input("🔍 Buscar (parceiro/produto)", "")
+        df_view = df_f.copy()
+        if termo:
+            t = _slug(termo)
+            df_view = df_view[ df_view["partner_country_clean"].apply(lambda x: t in _slug(x)) | df_view["product_desc"].apply(lambda x: t in _slug(x)) ]
+        st.dataframe(df_view.sort_values(["month","flow","partner_country_clean"]), use_container_width=True, hide_index=True)
+        csv_bytes = df_view.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇️ Baixar CSV filtrado", data=csv_bytes, file_name="dados_filtrados.csv", mime="text/csv")
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    # ===================== Produtos (HS) + Tabela HS6 =====================
-    st.markdown('<div id="produtos"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="block">', unsafe_allow_html=True)
-    st.markdown("### Drill-down por HS-Code (até 6 dígitos)")
+    st.markdown("---")
+    st.caption("Fonte: INE (Angola), 2022.")
 
-    # Exemplo de produtos a partir dos fluxos (se houver base própria, substituir)
-    # Para demonstrar o join HS6, vamos sintetizar uma base a partir de strings:
-    sample_products = pd.DataFrame({
-        "Ano": [ano_focus]*5,
-        "Mês": ["Jan"]*5,
-        "Posição HS": ["270900 Petróleo bruto","271121 Gás natural","710210 Diamantes",
-                       "030363 Peixes congelados","090111 Café"],
-        "Valor Exportado": [120000, 18000, 9000, 2500, 1200],
-    })
-    # extrair HS6
-    def extract_hs6(s: str) -> str:
-        m = re.search(r"(\d{6})", str(s))
-        return m.group(1) if m else None
-    sample_products["HS6"] = sample_products["Posição HS"].apply(extract_hs6)
-
-    if not df_hs.empty:
-        prods = sample_products.merge(df_hs[["HS6","Descrição"]], on="HS6", how="left")
-    else:
-        prods = sample_products.copy()
-        prods["Descrição"] = ""
-
-    cap_list = sorted(prods["HS6"].str[:2].unique())
-    cap_sel = st.selectbox("Capítulo (2 dígitos)", cap_list)
-    view = prods[prods["HS6"].str.startswith(cap_sel)].copy()
-    st.dataframe(view[["HS6","Posição HS","Descrição","Valor Exportado"]],
-                 use_container_width=True, hide_index=True)
-
-    st.altair_chart(
-        alt.Chart(view.sort_values("Valor Exportado", ascending=False))
-           .mark_bar()
-           .encode(x=alt.X("Valor Exportado:Q", title=f"Valor Exportado ({moeda})"),
-                   y=alt.Y("Posição HS:N", sort="-x"),
-                   tooltip=["HS6","Posição HS","Descrição","Valor Exportado"])
-           .properties(height=300),
-        use_container_width=True
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # ===================== Exportação (CSV/XLSX + Relatório HTML) =====================
-    st.markdown('<div class="block">', unsafe_allow_html=True)
-    st.markdown("### Exportação de dados e relatório")
-
-    cexp1, cexp2, cexp3 = st.columns(3)
-    with cexp1:
-        st.download_button(
-            "⬇️ Fluxos (CSV)",
-            data=dedup_cols(df_flow).to_csv(index=False).encode("utf-8"),
-            file_name=f"fluxos_{'-'.join(map(str,anos))}.csv",
-            mime="text/csv"
-        )
-    with cexp2:
-        payload, fname, mime = to_xlsx_or_zip({
-            "Fluxos": df_flow,
-            "Fluxos_convertidos": df_flow_conv,
-            "Parceiros_demo": dfp,
-            "Produtos_demo": prods
-        })
-        st.download_button(f"⬇️ {'Tudo (XLSX)' if fname.endswith('.xlsx') else 'Tudo (ZIP/CSVs)'}",
-                           data=payload, file_name=fname, mime=mime)
-
-    with cexp3:
-        # Relatório HTML simples (Plotly to_html + KPIs)
-        # build KPI snippet
-        kpi_html = f"""
-        <h2 style="font-family:system-ui;margin:0 0 8px">Relatório — {ano_focus}</h2>
-        <p style="font-family:system-ui;margin:4px 0">Exportações: <b>{to_pretty_number(row['Exportações'])} {moeda}</b> &nbsp;|&nbsp;
-        Importações: <b>{to_pretty_number(row['Importações'])} {moeda}</b> &nbsp;|&nbsp;
-        Balança: <b>{to_pretty_number(row['Balança'])} {moeda}</b> &nbsp;|&nbsp;
-        Cobertura: <b>{row['Cobertura_%']:.1f}%</b></p>
-        <hr/>
-        """
-        # incorporar o mapa (plotly) no HTML
-        map_html = pio.to_html(fig_map, include_plotlyjs="cdn", full_html=False)
-        doc = f"<!doctype html><html><head><meta charset='utf-8'><title>Relatório CE Angola</title></head><body>{kpi_html}{map_html}</body></html>"
-        st.download_button("⬇️ Relatório HTML", data=doc.encode("utf-8"),
-                           file_name=f"relatorio_{ano_focus}.html", mime="text/html")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # ===================== Recomendações (texto) =====================
-    st.markdown('<div id="recomendacoes"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="block">', unsafe_allow_html=True)
-    st.markdown("### Roadmap (cumprido nesta versão)")
-    st.markdown("""
-- ✅ **Conexão a dados oficiais (INE/AGT)** com normalização e validações.
-- ✅ **Conversão cambial (BNA)**, recusa de duplicados em `Ano,Mês`.
-- ✅ **HS-Code até 6 dígitos** com _join_ à tabela HS.
-- ✅ **Mapa** com opção **Linear/Log** e tooltips com **Exp/Imp**.
-- ✅ **Metas** persistentes por perfil/ano via **SQLite** (fallback `st.session_state`).
-- ✅ **Relatório HTML** com KPIs e mapa (Plotly embutido).
-    """)
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # ===================== Footer =====================
-    st.markdown(f"""
-    <div class="footer">
-      <div>© {datetime.now().year} • Dashboard de Comércio Externo de Angola — <span class="badge">v1.8.0</span></div>
-      <div>Streamlit • Altair • Plotly</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     main()
